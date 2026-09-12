@@ -1,0 +1,52 @@
+{% load static %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Клиенты и лиды · CRM</title>
+  <link rel="stylesheet" href="{% static 'leads/cards.css' %}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{% url 'leads:list' %}"><span class="brand-mark">C</span> CRM<span class="brand-caption">Рабочее пространство</span></a>
+    <nav aria-label="Главная навигация"><a href="{% url 'kanban' %}">Канбан</a><a class="active" href="{% url 'leads:list' %}" aria-current="page">Лиды</a><a href="/">Моя страница</a></nav>
+  </header>
+  <main>
+    <div class="page-heading">
+      <div><p class="eyebrow">КЛИЕНТЫ И ПРОДАЖИ</p><h1>Клиенты и лиды</h1><p class="subtitle">Обращения клиентов и всё, что нужно для следующего шага.</p></div>
+      {% if perms.leads.add_lead %}<a class="button primary" href="/workspace/lead/new/">+ Новый лид</a>{% endif %}
+    </div>
+    <form class="filters" method="get">
+      <div class="search-field"><label for="search">Поиск</label><input id="search" name="q" type="search" value="{{ query }}" placeholder="Имя, телефон, услуга или источник"></div>
+      <div><label for="status">Статус</label><select id="status" name="status"><option value="">Все статусы</option>{% for value, label in statuses %}<option value="{{ value }}"{% if selected_status == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+      <button class="button primary" type="submit">Найти</button>
+      {% if query or selected_status %}<a class="reset" href="{% url 'leads:list' %}">Сбросить</a>{% endif %}
+    </form>
+    <div class="results-heading"><h2>Обращения</h2><span>Найдено: {{ page_obj.paginator.count }}</span></div>
+    <section class="cards" aria-label="Карточки лидов">
+      {% for lead in page_obj %}
+      <article class="card">
+        <div class="card-top"><span class="record-number">ЛИД № {{ lead.pk }}</span><span class="badge badge-{{ lead.status }}">{{ lead.get_status_display }}</span></div>
+        <h3>{{ lead.client.name }}</h3>
+        <p class="phone"><span aria-hidden="true">☎</span> {{ lead.client.phone }}</p>
+        <div class="service"><span class="field-label">Услуга</span><p>{{ lead.service.name|default:"Услуга не выбрана" }}</p></div>
+        {% if lead.title != lead.service.name %}<p class="lead-title">{{ lead.title }}</p>{% endif %}
+        <dl class="details"><div><dt>Источник</dt><dd>{{ lead.source|default:"Не указан" }}</dd></div></dl>
+        <div class="card-footer">
+          <div class="assignee"><span class="avatar" aria-hidden="true">{% if lead.employee %}{{ lead.employee.get_full_name|default:lead.employee.username|first|upper }}{% else %}—{% endif %}</span><div><span class="field-label">Ответственный</span><p>{% if lead.employee %}{{ lead.employee.get_full_name|default:lead.employee.username }}{% else %}Не назначен{% endif %}</p></div></div>
+          {% if perms.leads.change_lead %}<a class="edit-link" href="/workspace/lead/{{ lead.pk }}/" aria-label="Изменить лид {{ lead.pk }}">Изменить →</a>{% endif %}
+        </div>
+      </article>
+      {% empty %}
+      <div class="empty-state"><span class="empty-icon" aria-hidden="true">◎</span><h3>{% if query or selected_status %}Лиды не найдены{% else %}Здесь появятся первые лиды{% endif %}</h3><p>{% if query or selected_status %}Попробуйте другое имя, телефон или статус.{% else %}Добавьте клиента и услугу в админке, затем создайте обращение.{% endif %}</p>{% if query or selected_status %}<a href="{% url 'leads:list' %}">Показать все лиды</a>{% elif perms.leads.add_lead %}<a href="/workspace/lead/new/">Создать первый лид →</a>{% endif %}</div>
+      {% endfor %}
+    </section>
+    {% if page_obj.has_other_pages %}<nav class="pagination" aria-label="Страницы">
+      {% if page_obj.has_previous %}<a href="?q={{ query|urlencode }}&amp;status={{ selected_status|urlencode }}&amp;page={{ page_obj.previous_page_number }}">← Назад</a>{% endif %}
+      <span>Страница {{ page_obj.number }} из {{ page_obj.paginator.num_pages }}</span>
+      {% if page_obj.has_next %}<a href="?q={{ query|urlencode }}&amp;status={{ selected_status|urlencode }}&amp;page={{ page_obj.next_page_number }}">Далее →</a>{% endif %}
+    </nav>{% endif %}
+  </main>
+</body>
+</html>

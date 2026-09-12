@@ -1,0 +1,1 @@
+{% extends "accounts/base.html" %}{% block content %}<h1>Вход в CRM</h1><form method="post" class="card">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button>Войти</button></form>{% endblock %}

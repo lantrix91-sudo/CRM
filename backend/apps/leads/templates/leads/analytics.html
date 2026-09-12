@@ -1,0 +1,1 @@
+{% extends "leads/report_base.html" %}{% block content %}<h1>Лиды за сегодня</h1><p>{{ today|date:"d.m.Y" }} · Часовой пояс CRM</p><table><tr><th>Источник</th><th>Лидов</th></tr>{% for label, count in rows %}<tr><td>{{ label }}</td><td>{{ count }}</td></tr>{% endfor %}<tr><th>Всего</th><th>{{ total }}</th></tr></table>{% endblock %}
