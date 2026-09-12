@@ -34,7 +34,7 @@ class RoleTests(TestCase):
 
     def test_worker_own_lifecycle_and_no_payment(self):
         self.login(self.worker)
-        self.assertContains(self.client.get(self.url), "Private client")
+        self.assertNotContains(self.client.get(self.url), "Private client")
         self.assertEqual(self.client.post(self.url, {"action": "start"}).status_code, 302)
         self.assertEqual(self.client.post(self.url, {"action": "complete"}).status_code, 302)
         self.assertEqual(self.client.post(self.url, {"action": "pay"}).status_code, 403)
@@ -98,7 +98,7 @@ class RoleTests(TestCase):
         from apps.leads.models import Lead
         self.login(self.operator)
         response = self.client.post("/workspace/lead/new/", {
-            "title": "Created by operator", "client": self.order.client_id,
+            "client_name": "Created by operator", "client_phone": "+77001234567",
             "service": self.order.service_id, "source": "Телефон",
         })
         self.assertRedirects(response, "/operator/")
@@ -109,7 +109,7 @@ class RoleTests(TestCase):
         lead = Lead.objects.create(title="Assigned request", client=self.order.client, service=self.order.service, employee=self.worker, status="assigned")
         self.login(self.worker)
         self.assertContains(self.client.get("/my-orders/"), "Assigned request")
-        self.assertContains(self.client.get(f"/my-assignments/{lead.pk}/"), "Private client")
+        self.assertNotContains(self.client.get(f"/my-assignments/{lead.pk}/"), "Private client")
         self.login(self.other)
         self.assertNotContains(self.client.get("/my-orders/"), "Assigned request")
         self.assertEqual(self.client.get(f"/my-assignments/{lead.pk}/").status_code, 404)

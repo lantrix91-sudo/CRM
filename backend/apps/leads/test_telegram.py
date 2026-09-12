@@ -37,8 +37,10 @@ class TelegramTests(TestCase):
         self.assertEqual(self.notice.state, "sent")
         kwargs = self.api.call.call_args.kwargs
         self.assertEqual(kwargs["chat_id"], 12345)
-        for text in ("Repair", "Ivan", "Centre", "+77000000000"):
+        for text in ("Repair",):
             self.assertIn(text, kwargs["text"])
+        self.assertNotIn("Ivan", kwargs["text"])
+        self.assertNotIn("+77000000000", kwargs["text"])
         self.assertEqual(len(kwargs["reply_markup"]["inline_keyboard"][0]), 2)
 
     def test_accept_then_finish(self):

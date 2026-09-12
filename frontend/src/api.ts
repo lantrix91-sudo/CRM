@@ -1,7 +1,8 @@
-export type Status = "new" | "in_progress" | "assigned" | "completed" | "paid";
+export type Status = "new" | "in_progress" | "assigned" | "completed" | "paid" | "lost";
 export type Lead = {
-  key: string; kind: "lead" | "order"; detail: string; id: number; service_id: number | null; employee_id: number | null; title: string; client_name: string; phone: string;
-  service_name: string; employee_name: string | null; source: string; status: Status;
+  repeat_of_id?: number | null;
+  delivery?: string | null; waiting_minutes?: number | null; overdue?: boolean; assignment_notice?: string | null; key: string; kind: "lead" | "order"; detail: string; id: number; service_id: number | null; employee_id: number | null; title: string; client_name: string; client_previous_count: number; phone: string;
+  service_name: string; employee_name: string | null; employee_active_count: number; source: string; status: Status;
 };
 export type Board = {
   workers?: { id: number; name: string; service_ids: number[] }[];
@@ -33,14 +34,14 @@ export const saveStatus = (lead: Lead, status: Status) => request<{ id: number; 
   },
 );
 
-export async function assignLead(lead: Lead, employeeId?: number): Promise<Lead> {
+export async function assignLead(lead: Lead, employeeId?: number, reason?: string): Promise<Lead> {
   const response = await fetch(`/api/orders/${lead.id}/assign/`, {
     method: "POST", credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
       "X-CSRFToken": document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? "",
     },
-    body: JSON.stringify(employeeId === undefined ? {} : { employee_id: employeeId }),
+    body: JSON.stringify({ ...(employeeId === undefined || reason !== undefined ? {} : { employee_id: employeeId }), ...(reason === undefined ? {} : { action: "return", reason, expected_notice: lead.assignment_notice }) }),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));

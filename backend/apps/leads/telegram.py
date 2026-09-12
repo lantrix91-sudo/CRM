@@ -48,19 +48,38 @@ class TelegramAPI:
 
 
 def keyboard(notice, accepted=False):
+    if accepted and notice.order_id:
+        markup = {"inline_keyboard": [
+            [{"text": "Мастер отказался", "callback_data": f"{notice.pk.hex}:worker_reject"},
+             {"text": "Клиент отказался", "callback_data": f"{notice.pk.hex}:client_reject"}],
+            [{"text": "Отложить на 1 день", "callback_data": f"{notice.pk.hex}:defer_1"},
+             {"text": "Отложить на 2 дня", "callback_data": f"{notice.pk.hex}:defer_2"}],
+            [{"text": "Завершить заказ", "callback_data": f"{notice.pk.hex}:finish"}],
+        ]}
+        if notice.order.repeat_of_id:
+            markup["inline_keyboard"] = markup["inline_keyboard"][1:]
+        return markup
     actions = [("Завершить заказ", "finish")] if accepted else [("Принять", "accept"), ("Отклонить", "reject")]
     return {"inline_keyboard": [[
         {"text": label, "callback_data": f"{notice.pk.hex}:{action}"} for label, action in actions
     ]]}
 
 
-def notification_text(lead):
+def notification_text(lead, accepted=False, completed=False):
     service_name = lead.service.name if lead.service_id else "Услуга не выбрана"
-    return (
-        f"🔔 Новый заказ\n{service_name}\n"
-        f"Клиент: {lead.client.name}\nРайон: {lead.client.district or 'Не указан'}\n"
-        f"Телефон: {lead.client.phone}\nЗаявка № {lead.pk}"
-    )
+    lines = ["✅ Выполнено" if completed else "Заказ принят" if accepted else "🔔 Новый заказ", service_name]
+    if getattr(lead, "repeat_of_id", None):
+        lines.append(f"❤️ Повторка · бесплатно · исходный заказ № {lead.repeat_of_id}")
+    if lead.client.address:
+        lines.append(f"Адрес: {lead.client.address}")
+    if accepted:
+        lines.append(f"WhatsApp: {lead.client.phone}")
+        if lead.client.normalized_phone:
+            lines.append(f"https://wa.me/{lead.client.normalized_phone.lstrip('+')}")
+    else:
+        lines.append("WhatsApp будет доступен после принятия заказа.")
+    lines.append(f"Заказ № {lead.pk}")
+    return "\n".join(lines)
 
 
 def target_for(notice):
@@ -76,7 +95,34 @@ def is_current(notice, lead):
     )
 
 
+def deliver_reminders(api):
+    ids = list(TelegramNotice.objects.filter(active=True, reminder_at__lte=timezone.now()).values_list("pk", flat=True)[:20])
+    for pk in ids:
+        snapshot = TelegramNotice.objects.get(pk=pk)
+        with transaction.atomic():
+            order = target_for(snapshot)
+            notice = TelegramNotice.objects.select_for_update().select_related("employee").get(pk=pk)
+            if not notice.reminder_at or notice.reminder_at > timezone.now():
+                continue
+            if not is_current(notice, order) or order.status != "in_progress":
+                notice.reminder_at = None
+                notice.save(update_fields=("reminder_at",))
+                continue
+            if not notice.employee.is_active or notice.employee.telegram_chat_id != notice.chat_id:
+                continue
+            try:
+                api.call("sendMessage", chat_id=notice.chat_id,
+                         text="⏰ Напоминание: срок переноса истёк.\n" + notification_text(order, accepted=True))
+            except TelegramError:
+                notice.reminder_at = timezone.now() + timedelta(minutes=1)
+                notice.save(update_fields=("reminder_at",))
+                continue
+            notice.reminder_at = None
+            notice.save(update_fields=("reminder_at",))
+
+
 def deliver_pending(api):
+    deliver_reminders(api)
     ids = list(TelegramNotice.objects.filter(
         state="pending", next_attempt_at__lte=timezone.now(),
     ).order_by("created_at").values_list("pk", flat=True)[:20])
@@ -89,7 +135,8 @@ def deliver_pending(api):
             notice = TelegramNotice.objects.select_for_update().get(pk=pk)
             if notice.state != "pending":
                 continue
-            if not is_current(notice, lead) or lead.status != Lead.Status.ASSIGNED:
+            accepted_repeat = bool(notice.order_id and lead.repeat_of_id and lead.status == Order.Status.IN_PROGRESS)
+            if not is_current(notice, lead) or (lead.status != Lead.Status.ASSIGNED and not accepted_repeat):
                 logger.info("delivery_cancelled notice=%s order=%s worker=%s", notice.pk, notice.order_id, notice.employee_id)
                 notice.state = "cancelled"
                 notice.active = False
@@ -104,7 +151,7 @@ def deliver_pending(api):
             logger.info("delivery_attempt notice=%s order=%s worker=%s chat=%s attempt=%s", notice.pk, notice.order_id, employee.pk, employee.telegram_chat_id, notice.attempts + 1)
             try:
                 result = api.call("sendMessage", chat_id=employee.telegram_chat_id,
-                                  text=notification_text(lead), reply_markup=keyboard(notice))
+                                  text=notification_text(lead, accepted=accepted_repeat), reply_markup=keyboard(notice, accepted=accepted_repeat))
             except TelegramError:
                 logger.warning("delivery_failed notice=%s worker=%s", notice.pk, employee.pk)
                 notice.attempts += 1
@@ -145,10 +192,47 @@ def apply_callback(callback):
         return "Нет доступа или назначение уже изменилось.", None, None
     if notice.order_id:
         from apps.orders.services import transition_order, record_event
+        if lead.repeat_of_id and action in ("reject", "worker_reject", "client_reject"):
+            return "Для повторки доступны перенос и завершение.", None, None
+        if lead.status == Order.Status.IN_PROGRESS:
+            if action in ("defer_1", "defer_2"):
+                days = int(action[-1])
+                notice.reminder_at = timezone.now() + timedelta(days=days)
+                notice.amount_prompt_id = None
+                notice.save(update_fields=("reminder_at", "amount_prompt_id"))
+                text = f"⏳ Отложено до {timezone.localtime(notice.reminder_at):%d.%m.%Y %H:%M}"
+                record_event(lead, notice.employee, text)
+                return text, notice, keyboard(notice, accepted=True)
+            if action in ("worker_reject", "client_reject"):
+                if action == "worker_reject":
+                    lead.employee = None
+                    lead.status = Order.Status.NEW
+                    lead.save(update_fields=("employee", "status"))
+                    text = "Мастер отказался. Заказ возвращён оператору."
+                else:
+                    lead.status = Order.Status.CANCELLED
+                    lead.cancellation_reason = "Клиент отказался (со слов мастера)"
+                    lead.cancelled_at = timezone.now()
+                    lead.save(update_fields=("status", "cancellation_reason", "cancelled_at"))
+                    text = "Клиент отказался. Заказ отменён."
+                notice.active = False
+                notice.reminder_at = None
+                notice.amount_prompt_id = None
+                notice.save(update_fields=("active", "reminder_at", "amount_prompt_id"))
+                record_event(lead, notice.employee, text)
+                return text, notice, {"inline_keyboard": []}
         if action == "accept" and lead.status == Order.Status.ASSIGNED:
             transition_order(lead.pk, "start", actor=notice.employee)
             return "Заказ принят.", notice, keyboard(notice, accepted=True)
         if action == "finish" and lead.status == Order.Status.IN_PROGRESS:
+            if lead.repeat_of_id:
+                transition_order(lead.pk, "complete", actor=notice.employee)
+                record_event(lead, notice.employee, "❤️ Повторка выполнена бесплатно")
+                notice.active = False
+                notice.reminder_at = None
+                notice.amount_prompt_id = None
+                notice.save(update_fields=("active", "reminder_at", "amount_prompt_id"))
+                return "✅ Повторка выполнена бесплатно.", notice, {"inline_keyboard": []}
             return "Введите полученную сумму в ответ на сообщение бота.", notice, keyboard(notice, accepted=True)
         if action == "reject" and lead.status == Order.Status.ASSIGNED:
             record_event(lead, notice.employee, "Мастер отклонил заказ через Telegram")
@@ -184,7 +268,25 @@ def process_update(api, update):
         action = callback.get("data", "").rsplit(":", 1)[-1]
         logger.info("callback action=%s accepted=%s", action if action in ("accept", "reject", "finish") else "unknown", notice is not None)
         api.call("answerCallbackQuery", callback_query_id=callback["id"], text=text)
+        if notice and action in ("worker_reject", "client_reject", "defer_1", "defer_2"):
+            target = Order.objects.get(pk=notice.order_id)
+            details = notification_text(target, accepted=True).split("\n", 1)[1]
+            api.call("editMessageText", chat_id=notice.chat_id, message_id=notice.message_id,
+                     text=text + "\n" + details, reply_markup=markup)
+            return
+        if notice and action == "accept":
+            with transaction.atomic():
+                target = target_for(notice)
+                notice.refresh_from_db()
+                if is_current(notice, target) and target.status == "in_progress":
+                    api.call("editMessageText", chat_id=notice.chat_id, message_id=notice.message_id,
+                        text=notification_text(target, accepted=True), reply_markup=markup)
+            return
         if notice and notice.order_id and callback.get("data", "").endswith(":finish"):
+            if notice.order.repeat_of_id:
+                api.call("editMessageText", chat_id=notice.chat_id, message_id=notice.message_id,
+                         text=notification_text(notice.order, accepted=True, completed=True), reply_markup=markup)
+                return
             result = api.call("sendMessage", chat_id=notice.chat_id,
                 text=f"Заказ № {notice.order_id}. Сколько получили? Введите сумму в KZT ответом на это сообщение (например, 15000 или 15000,50). Если оплаты нет — 0. Отмена — /cancel.",
                 reply_markup={"force_reply": True, "selective": True})
@@ -205,6 +307,20 @@ def process_update(api, update):
     result = apply_amount_message(message)
     if result:
         logger.info("amount_reply chat=%s result=%s", chat.get("id"), "processed")
+        notice = TelegramNotice.objects.filter(
+            chat_id=chat["id"],
+            amount_prompt_id=message.get("reply_to_message", {}).get("message_id"),
+            active=False, state="sent", order__status__in=("completed", "paid"),
+            employee__telegram_chat_id=chat["id"],
+        ).first()
+        if notice and notice.message_id:
+            try:
+                api.call("editMessageText", chat_id=notice.chat_id,
+                         message_id=notice.message_id,
+                         text=notification_text(notice.order, accepted=True, completed=True),
+                         reply_markup={"inline_keyboard": []})
+            except TelegramError:
+                logger.warning("completion_message_update_failed notice=%s", notice.pk)
         api.call("sendMessage", chat_id=chat["id"], text=result)
         return
     if chat.get("type") == "private" and message.get("text", "").split("@")[0].split(" ")[0] in ("/start", "/id"):
@@ -232,6 +348,8 @@ def apply_amount_message(message):
         or not notice.employee.is_active or notice.employee.role != "worker"
         or notice.employee.telegram_chat_id != sender or order.status != Order.Status.IN_PROGRESS):
         return "Заказ уже изменён или завершён. Сумма не сохранена."
+    if order.repeat_of_id:
+        return "Повторка бесплатная. Нажмите «Завершить заказ», ввод суммы не требуется."
     raw = message.get("text", "").strip()
     if raw == "/cancel":
         notice.amount_prompt_id = None

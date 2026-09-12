@@ -8,12 +8,53 @@ from apps.orders.models import Order
 class ClientForm(forms.ModelForm):
     class Meta:
         model = Client
-        fields = ("name", "phone", "district")
+        fields = ("name", "phone", "address", "district")
+
+    def clean_phone(self):
+        from apps.customers.phones import normalize_phone
+        try:
+            return normalize_phone(self.cleaned_data["phone"])
+        except ValueError as error:
+            raise forms.ValidationError(str(error))
 
 class LeadForm(forms.ModelForm):
+    client_name = forms.CharField(label="Имя", max_length=200)
+    client_phone = forms.CharField(label="Номер WhatsApp", max_length=32)
+    client_address = forms.CharField(label="Адрес", max_length=300, required=False)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk and self.instance.client_id:
+            client = self.instance.client
+            self.initial.update(client_name=client.name, client_phone=client.phone, client_address=client.address)
+
+    def clean_client_phone(self):
+        from apps.customers.phones import normalize_phone
+        try:
+            return normalize_phone(self.cleaned_data["client_phone"])
+        except ValueError as error:
+            raise forms.ValidationError(str(error))
+
+    def save(self, commit=True):
+        from django.db import transaction
+        if not commit:
+            raise ValueError("Saving a client and lead requires commit=True")
+        with transaction.atomic():
+            phone = self.cleaned_data["client_phone"]
+            client = Client.objects.filter(normalized_phone=phone).order_by("pk").first()
+            if client is None:
+                client = Client.objects.create(
+                    name=self.cleaned_data["client_name"], phone=phone,
+                    address=self.cleaned_data.get("client_address", ""),
+                )
+            self.instance.client = client
+            if not self.instance.title:
+                self.instance.title = self.cleaned_data["client_name"]
+            return super().save(commit=commit)
+
     class Meta:
         model = Lead
-        fields = ("title", "client", "service", "source")
+        fields = ("client_name", "client_phone", "client_address", "service", "source")
         widgets = {"source": forms.Select(choices=[("", "Не указан")] + [(s, s) for s in ("OLX", "Google", "Instagram", "Telegram", "Телефон")])}
 
 class OrderForm(forms.ModelForm):

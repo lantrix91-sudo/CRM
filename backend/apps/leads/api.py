@@ -5,7 +5,7 @@ from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Lead
+from .models import Lead, TelegramNotice
 
 
 BOARD_STATUSES = (Lead.Status.NEW, Lead.Status.IN_PROGRESS, Lead.Status.ASSIGNED, Lead.Status.WON)
@@ -55,22 +55,64 @@ class BoardAPI(APIView):
         from apps.accounts.models import User
         workers = User.objects.filter(role="worker", is_active=True, is_available=True).prefetch_related("services").order_by("username")
         from apps.orders.models import Order
+        from django.utils import timezone
+        notices = {}
+        for notice in TelegramNotice.objects.filter(order__isnull=False, active=True).order_by("-created_at", "-pk"):
+            notices.setdefault(notice.order_id, notice)
         cards = []
-        for lead in leads.filter(order__isnull=True).exclude(status=Lead.Status.LOST):
+        client_history = []
+        for lead in leads.filter(order__isnull=True).select_related("lost_by"):
             card = dict(LeadCardSerializer(lead).data)
-            card.update(key=f"lead-{lead.pk}", kind="lead", status="new", detail="Ожидает согласия клиента")
+            card.update(key=f"lead-{lead.pk}", kind="lead", status="lost" if lead.status == "lost" else "new", detail=(f"Причина: {lead.lost_reason or 'Не указана'}. Закрыл: {lead.lost_by or 'Не указан'}. Дата: {lead.lost_at.strftime('%d.%m.%Y') if lead.lost_at else 'Не указана'}" if lead.status == "lost" else "Ожидает согласия клиента"))
             cards.append(card)
+            client_history.append((lead.created_at, card["key"], lead.client_id, lead.client.phone))
         for order in Order.objects.select_related("client", "service", "employee", "lead").order_by("-created_at"):
-            cards.append({"id": order.pk, "key": f"order-{order.pk}", "kind": "order", "title": order.title,
+            notice = notices.get(order.pk)
+            waiting = max(0, int((timezone.now() - notice.created_at).total_seconds() // 60)) if notice and order.status == "assigned" else None
+            delivery = None
+            if order.employee_id and order.status in ("assigned", "in_progress"):
+                delivery = "Отправлено в Telegram" if notice and notice.state == "sent" else "Ошибка доставки · повтор автоматически" if notice and notice.attempts else "Ждёт отправки"
+                if not order.employee.telegram_chat_id:
+                    delivery = "Telegram не подключён"
+                elif not notice:
+                    delivery = "Нет уведомления в очереди"
+            cards.append({"delivery": delivery, "waiting_minutes": waiting, "overdue": waiting is not None and waiting >= 15,
+                "assignment_notice": str(notice.pk) if notice and order.status == "assigned" else None,
+                "repeat_of_id": order.repeat_of_id, "id": order.pk, "key": f"order-{order.pk}", "kind": "order", "title": order.title,
                 "client_name": order.client.name, "phone": order.client.phone, "service_id": order.service_id,
                 "service_name": order.service.name, "employee_id": order.employee_id,
                 "employee_name": (order.employee.get_full_name() or order.employee.username) if order.employee else None,
-                "source": order.lead.source if order.lead else "", "status": {"new": "in_progress", "assigned": "assigned", "in_progress": "assigned", "completed": "completed", "paid": "paid"}[order.status],
-                "detail": {"new": "Клиент согласился · нужен мастер", "assigned": "Ожидает принятия мастером", "in_progress": "Мастер приступил", "completed": f"Мастер получил {order.received_amount} KZT · проверьте оплату" if order.received_at else "Работа завершена · ожидает оплаты", "paid": "Оплата подтверждена"}[order.status]})
+                "source": order.lead.source if order.lead else "", "status": {"new": "in_progress", "assigned": "assigned", "in_progress": "assigned", "completed": "completed", "paid": "paid", "cancelled": "lost"}[order.status],
+                "detail": {"new": "Клиент согласился · нужен мастер", "assigned": "Ожидает принятия мастером", "in_progress": "Мастер приступил", "completed": f"Мастер получил {order.received_amount} KZT · проверьте оплату" if order.received_at else "Работа завершена · ожидает оплаты", "paid": "Оплата подтверждена", "cancelled": f"Клиент отказался: {order.cancellation_reason}"}[order.status]})
+            client_history.append((order.lead.created_at if order.lead else order.created_at,
+                                   f"order-{order.pk}", order.client_id, order.client.phone))
+        from apps.customers.phones import normalize_phone
+        previous_counts = {}
+        seen_clients = {}
+        for created_at, key, client_id, phone in sorted(client_history):
+            try:
+                identity = ("phone", normalize_phone(phone))
+            except ValueError:
+                identity = ("client", client_id)
+            previous_counts[key] = seen_clients.get(identity, 0)
+            seen_clients[identity] = previous_counts[key] + 1
+        from django.db.models import Count
+        workloads = {}
+        active_statuses = ("new", "assigned", "in_progress")
+        for queryset in (
+            Lead.objects.filter(order__isnull=True, status__in=active_statuses),
+            Order.objects.filter(status__in=active_statuses),
+        ):
+            for row in queryset.filter(employee__isnull=False).values("employee_id").annotate(total=Count("pk")):
+                employee_id = row["employee_id"]
+                workloads[employee_id] = workloads.get(employee_id, 0) + row["total"]
+        for card in cards:
+            card["client_previous_count"] = previous_counts[card["key"]]
+            card["employee_active_count"] = workloads.get(card["employee_id"], 0)
         return Response({
             "workers": [{"id": worker.pk, "name": worker.get_full_name() or worker.username, "service_ids": [service.pk for service in worker.services.all()]} for worker in workers],
             "leads": cards,
-            "columns": [{"id": key, "label": label} for key, label in (("new", "Новый"), ("in_progress", "В работе"), ("assigned", "Назначен"), ("completed", "Завершён"), ("paid", "Оплачен"))],
+            "columns": [{"id": key, "label": label} for key, label in (("new", "Новый"), ("in_progress", "В работе"), ("assigned", "Назначен"), ("completed", "Завершён"), ("paid", "Оплачен"), ("lost", "Неудачные сделки"))],
             "archived_count": leads.filter(status=Lead.Status.LOST).count(),
             "can_change": request.user.has_perm("leads.change_lead"),
             "can_manage": allowed(request.user, "manager"),
@@ -96,16 +138,27 @@ class OrderAssignAPI(APIView):
     permission_classes = (BoardPermission,)
 
     def post(self, request, pk):
-        from apps.orders.services import assign_order
+        from apps.orders.services import assign_order, return_order
         from apps.orders.models import Order
         from django.core.exceptions import ValidationError
-        if not isinstance(request.data, dict) or set(request.data) - {"employee_id"}:
+        if not isinstance(request.data, dict) or set(request.data) - {"employee_id", "reason", "expected_notice", "action"}:
             return Response({"detail": "Некорректные поля."}, status=400)
         employee_id = request.data.get("employee_id")
         if "employee_id" in request.data and (type(employee_id) is not int or employee_id <= 0):
             return Response({"detail": "Выберите мастера."}, status=400)
         try:
-            assign_order(pk, employee_id, request.user)
+            if "expected_notice" in request.data and "reason" not in request.data:
+                return Response({"detail": "Укажите причину переназначения."}, status=400)
+            if "reason" in request.data and not isinstance(request.data["reason"], str):
+                return Response({"detail": "Укажите причину переназначения."}, status=400)
+            if request.data.get("action") == "return":
+                if "employee_id" in request.data:
+                    return Response({"detail": "При возврате мастер не назначается."}, status=400)
+                return_order(pk, request.user, request.data.get("reason"), request.data.get("expected_notice"))
+            elif "action" in request.data or "reason" in request.data or "expected_notice" in request.data:
+                return Response({"detail": "Сначала верните заказ оператору, затем назначьте мастера."}, status=400)
+            else:
+                assign_order(pk, employee_id, request.user)
         except Order.DoesNotExist:
             return Response(status=404)
         except ValidationError as error:

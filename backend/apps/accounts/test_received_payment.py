@@ -67,3 +67,13 @@ class ReceivedPaymentTests(TestCase):
         self.assertEqual(self.client.get(self.url).status_code, 404)
         self.client.force_login(self.manager)
         self.assertEqual(self.client.get("/my-orders/history/").status_code, 403)
+
+    def test_worker_contact_hidden_until_acceptance(self):
+        self.order.status = "assigned"
+        self.order.client.phone = "+77001234567"
+        self.order.client.save()
+        self.order.save()
+        self.assertNotContains(self.client.get(self.url), "+77001234567")
+        self.assertNotContains(self.client.get("/my-orders/"), "+77001234567")
+        self.client.post(self.url, {"action":"start"})
+        self.assertContains(self.client.get(self.url), "+77001234567")

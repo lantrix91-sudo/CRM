@@ -13,11 +13,15 @@ class Order(models.Model):
         IN_PROGRESS = "in_progress", "В работе"
         COMPLETED = "completed", "Выполнен, ожидает оплаты"
         PAID = "paid", "Оплачен"
+        CANCELLED = "cancelled", "Отменён клиентом"
 
+    repeat_of = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT, related_name="repeat_repairs", verbose_name="повторный ремонт заказа")
     lead = models.OneToOneField("leads.Lead", on_delete=models.PROTECT, null=True, blank=True, related_name="order", verbose_name="исходный лид")
     status = models.CharField("этап", max_length=20, choices=Status.choices, default=Status.NEW, db_index=True)
     amount = models.DecimalField("стоимость (KZT)", max_digits=12, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(0)])
     completed_at = models.DateTimeField("выполнен", null=True, blank=True)
+    cancellation_reason = models.CharField("причина отмены", max_length=300, blank=True)
+    cancelled_at = models.DateTimeField("дата отмены", null=True, blank=True)
     paid_at = models.DateTimeField("оплачен", null=True, blank=True)
 
     received_amount = models.DecimalField("получено мастером (KZT)", max_digits=12, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(0.01)])

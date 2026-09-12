@@ -3,8 +3,9 @@ from django.db import models
 
 class Client(models.Model):
     name = models.CharField("имя", max_length=200)
-    phone = models.CharField("телефон", max_length=32, db_index=True)
+    phone = models.CharField("номер WhatsApp", max_length=32, db_index=True)
     normalized_phone = models.CharField(max_length=16, blank=True, db_index=True, editable=False)
+    address = models.CharField("адрес", max_length=300, blank=True)
     district = models.CharField("район", max_length=200, blank=True)
     created_at = models.DateTimeField("дата создания", auto_now_add=True)
 

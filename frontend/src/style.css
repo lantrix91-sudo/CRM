@@ -10,3 +10,23 @@
 .card-actions{display:grid;gap:10px;margin:14px 0}.card-actions form{margin:0}.card-actions .button{width:100%;white-space:normal;line-height:1.4}.worker-choice{display:grid;gap:6px;font-size:12px}.worker-choice select{width:100%;min-width:0;padding:10px;border:1px solid #dbe4ec;border-radius:6px;background:white;color:inherit}.card-actions p{margin:0;line-height:1.5}.card-actions a{font-size:12px}
 
 .board{grid-template-columns:repeat(5,minmax(280px,1fr));overflow-x:auto;align-items:start}.column-completed{border-top:3px solid #54a27c}.column-paid{border-top:3px solid #236652}
+
+.waiting-overdue{border:2px solid #d29b36;background:#fffaf0}.delivery-status{font-size:12px;color:#536573}
+
+.board{grid-template-columns:repeat(6,minmax(280px,1fr))}.column-lost{--accent:#b96a64}.card-actions summary{cursor:pointer;color:#95493f;font-size:12px}.card-actions details form{display:grid;gap:10px;padding-top:10px}
+
+/* Keep every stage visible without clipping the final column. */
+main{max-width:1920px}
+.board{grid-template-columns:repeat(6,minmax(0,1fr));overflow:visible}
+.column,.column-body,.lead-card,.card-actions,.card-actions form{min-width:0}
+.column-heading h2{overflow-wrap:anywhere}
+.card-actions input{min-width:0;max-width:100%}
+@media(max-width:1599px){.board{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:950px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.board{grid-template-columns:minmax(0,1fr)}.column{min-height:180px}}
+
+.worker-load{display:inline-block;padding:3px 7px;border-radius:6px;font-weight:600}.worker-load-green{color:#166534;background:#dcfce7}.worker-load-yellow{color:#854d0e;background:#fef9c3}.worker-load-red{color:#991b1b;background:#fee2e2}
+
+.client-badge{display:inline-block;margin:0 0 8px;padding:4px 7px;border-radius:6px;font-size:11px;line-height:1.5}.client-returning{color:#1e40af;background:#dbeafe;font-weight:600}.client-new{color:#536573;background:#f1f5f9}
+
+.lead-card.repeat-repair-card{border:2px solid #a78bfa;background:#f5f3ff}.repeat-repair-badge{display:inline-block;margin:8px 0;padding:4px 8px;border-radius:6px;background:#ede9fe;color:#5b21b6;font-size:12px;font-weight:700}

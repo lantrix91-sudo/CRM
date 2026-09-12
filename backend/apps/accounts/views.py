@@ -41,7 +41,7 @@ def operator_home(request):
 def worker_home(request):
     return render(request, "accounts/worker.html", {
         "assigned_leads": Lead.objects.filter(employee=request.user, order__isnull=True, status__in=("new", "assigned", "in_progress")).select_related("client", "service").order_by("-created_at")[:100],
-        "orders": Order.objects.filter(employee=request.user).exclude(status="paid").select_related("client", "service").order_by("-created_at")[:100],
+        "orders": Order.objects.filter(employee=request.user).exclude(status__in=("paid", "cancelled")).select_related("client", "service").order_by("-created_at")[:100],
     })
 
 @roles_required("manager", "operator", "worker")
@@ -53,12 +53,23 @@ def order_detail(request, pk):
         order = get_object_or_404(queryset.select_for_update(), pk=pk)
         form = None
         payment_form = ReceivedPaymentForm(request.POST if request.method == "POST" and request.POST.get("action") == "received_payment" else None)
-        if allowed(request.user, "manager", "operator"):
+        if allowed(request.user, "manager", "operator") and order.status != "cancelled":
             form = OrderForm(request.POST if request.method == "POST" and request.POST.get("action") == "save" else None, instance=order)
         if request.method == "POST":
             action = request.POST.get("action")
             try:
-                if action == "save":
+                if action == "repeat_repair":
+                    from apps.orders.services import repeat_repair
+                    repeated = repeat_repair(pk, request.user)
+                    messages.success(request, f"Повторный ремонт № {repeated.pk} назначен мастеру. Уведомление поставлено в очередь Telegram.")
+                    return redirect("kanban")
+                elif action == "cancel":
+                    from apps.orders.services import cancel_order
+                    cancel_order(pk, request.user, request.POST.get("reason", ""))
+                    if request.POST.get("return_to") == "kanban":
+                        return redirect("kanban")
+                    return redirect("order-detail", pk=pk)
+                elif action == "save":
                     if form is None:
                         raise PermissionDenied
                     previous_employee = order.employee_id
@@ -123,6 +134,28 @@ def edit_record(request, kind, pk=None):
         raise PermissionDenied
     form_class = forms[kind]
     obj = get_object_or_404(form_class._meta.model, pk=pk) if pk else None
+    if request.method == "POST" and request.POST.get("action") == "lost":
+        if kind != "lead" or obj is None:
+            raise PermissionDenied
+        reason = request.POST.get("reason", "").strip()
+        with transaction.atomic():
+            lead = Lead.objects.select_for_update().get(pk=obj.pk)
+            if Order.objects.filter(lead=lead).exists() or lead.status == "converted":
+                messages.error(request, "Уже создан заказ. Закрыть его как неудачную сделку нельзя.")
+            elif lead.status == "lost":
+                messages.info(request, "Сделка уже закрыта.")
+            elif not reason or len(reason) > 300:
+                messages.error(request, "Укажите причину отказа (до 300 символов).")
+            else:
+                from django.utils import timezone
+                lead.status = "lost"
+                lead.lost_reason = reason
+                lead.lost_at = timezone.now()
+                lead.lost_by = request.user
+                lead.save(update_fields=("status", "lost_reason", "lost_at", "lost_by"))
+                TelegramNotice.objects.filter(lead=lead, active=True).update(active=False)
+                messages.success(request, "Обращение закрыто как неудачная сделка.")
+        return redirect("kanban")
     if request.method == "POST" and request.POST.get("action") == "convert":
         if kind != "lead" or obj is None:
             raise PermissionDenied
@@ -208,5 +241,5 @@ def assigned_lead_detail(request, pk):
 @roles_required("worker")
 def worker_history(request):
     from django.core.paginator import Paginator
-    orders = Order.objects.filter(employee=request.user, status="paid").select_related("client", "service").order_by("-paid_at", "-pk")
+    orders = Order.objects.filter(employee=request.user, status__in=("paid", "cancelled")).select_related("client", "service").order_by("-paid_at", "-pk")
     return render(request, "accounts/worker_history.html", {"page_obj": Paginator(orders, 20).get_page(request.GET.get("page"))})

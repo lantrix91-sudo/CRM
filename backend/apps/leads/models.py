@@ -14,6 +14,9 @@ class Lead(models.Model):
         CONVERTED = "converted", "Создан заказ"
         LOST = "lost", "Закрыт без сделки"
 
+    lost_reason = models.CharField("причина отказа", max_length=300, blank=True)
+    lost_at = models.DateTimeField("закрыта без сделки", null=True, blank=True)
+    lost_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="closed_leads")
     source = models.CharField("источник", max_length=100, blank=True)
     status = models.CharField(
         "статус", max_length=20, choices=Status.choices,
@@ -53,6 +56,7 @@ class TelegramNotice(models.Model):
     state = models.CharField(max_length=12, default="pending", choices=[("pending", "Ожидает"), ("sent", "Отправлено"), ("cancelled", "Отменено")])
     chat_id = models.BigIntegerField(null=True, blank=True)
     message_id = models.BigIntegerField(null=True, blank=True)
+    reminder_at = models.DateTimeField(null=True, blank=True, db_index=True)
     amount_prompt_id = models.BigIntegerField(null=True, blank=True)
     attempts = models.PositiveIntegerField(default=0)
     next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
