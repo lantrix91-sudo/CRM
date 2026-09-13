@@ -239,8 +239,12 @@ def apply_callback(callback):
             return "Заказ принят.", notice, keyboard(notice, accepted=True)
         if action == "finish" and lead.status == Order.Status.IN_PROGRESS:
             if lead.repeat_of_id:
-                transition_order(lead.pk, "complete", actor=notice.employee)
-                record_event(lead, notice.employee, "❤️ Повторка выполнена бесплатно")
+                from apps.orders.services import complete_order_with_payment
+                complete_order_with_payment(
+                    lead.pk, 0, 0, "Повторка выполнена бесплатно",
+                    actor=notice.employee,
+                    completion_event="❤️ Повторка выполнена бесплатно",
+                )
                 notice.active = False
                 notice.reminder_at = None
                 notice.amount_prompt_id = None
@@ -373,7 +377,7 @@ def clear_payment_messages(api, message):
 def apply_amount_message(message, api=None, confirmed=False):
     from django import forms
     from django.core.exceptions import ValidationError
-    from apps.orders.services import transition_order, record_event
+    from apps.orders.services import complete_order_with_payment
     chat = message.get("chat", {})
     sender = message.get("from", {}).get("id")
     reply_id = message.get("reply_to_message", {}).get("message_id")
@@ -471,17 +475,12 @@ def apply_amount_message(message, api=None, confirmed=False):
         notice.save(update_fields=("draft_comment", "payment_step"))
         clear_payment_messages(api, message)
         return None
-    order.expenses = expenses
-    order.work_comment = comment
-    order.save(update_fields=("expenses", "work_comment"))
-    transition_order(order.pk, "complete", actor=notice.employee)
-    if amount > 0:
-        order.amount = amount
-        order.received_amount = amount
-        order.received_at = timezone.now()
-        order.save(update_fields=("amount", "received_amount", "received_at"))
-        transition_order(order.pk, "pay", actor=notice.employee)
-    record_event(order, notice.employee, f"Telegram: получено {amount} KZT" + ("; способ оплаты не указан" if amount else "; без оплаты"))
+    complete_order_with_payment(
+        order.pk, amount, expenses, comment, actor=notice.employee,
+        completion_event=f"Telegram: получено {amount} KZT" + (
+            "; способ оплаты не указан" if amount else "; без оплаты"
+        ),
+    )
     notice.active = False
     notice.save(update_fields=("active",))
     clear_payment_messages(api, message)

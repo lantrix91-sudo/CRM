@@ -43,17 +43,15 @@ class WorkflowBoardTests(TestCase):
         self.api.force_login(self.worker)
         self.assertContains(self.api.get("/my-orders/"), order_url)
         self.post(order_url, {"action": "start"})
-        self.post(order_url, {"action": "complete"})
+        self.post(order_url, {
+            "action": "preview_completion", "amount": "100",
+            "expenses": "0", "comment": "Выполнена работа",
+        })
+        self.post(order_url, {"action": "confirm_completion"})
         self.api.force_login(self.operator)
-        self.assertEqual(self.card()["status"], "completed")
-        self.assertEqual(self.post(order_url, {"action": "pay"}).status_code, 403)
-        order.refresh_from_db()
-        order.amount = 100
-        order.save()
-        self.api.force_login(self.manager)
-        self.post(order_url, {"action": "pay"})
         self.assertEqual(self.card()["status"], "paid")
-        self.assertEqual(list(order.events.values_list("actor_id", flat=True)), [self.operator.pk, self.operator.pk, self.worker.pk, self.worker.pk, self.manager.pk])
+        order.refresh_from_db()
+        self.assertEqual(list(order.events.values_list("actor_id", flat=True)), [self.operator.pk, self.operator.pk, self.worker.pk, self.worker.pk, self.worker.pk, self.worker.pk])
 
     def test_old_status_does_not_fabricate_consent(self):
         self.lead.status = "won"

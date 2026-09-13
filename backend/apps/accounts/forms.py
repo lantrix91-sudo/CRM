@@ -127,3 +127,15 @@ class ServiceForm(forms.ModelForm):
 class ReceivedPaymentForm(forms.Form):
     received_amount = forms.DecimalField(label="Полученная сумма (KZT)", max_digits=12, decimal_places=2, min_value=0.01)
     received_method = forms.ChoiceField(label="Способ оплаты", choices=(("", "Выберите способ"), ("cash", "Наличные"), ("transfer", "Перевод"), ("card", "Карта")))
+
+
+class OrderCompletionForm(forms.Form):
+    amount = forms.DecimalField(label="Полученная сумма (KZT)", max_digits=12, decimal_places=2, min_value=0)
+    expenses = forms.DecimalField(label="Расходы (KZT)", max_digits=12, decimal_places=2, min_value=0, initial=0)
+    comment = forms.CharField(label="Что поменяли или сделали", max_length=2000)
+
+    def clean(self):
+        data = super().clean()
+        if data.get("amount") is not None and data.get("expenses") is not None and data["expenses"] > data["amount"]:
+            self.add_error("expenses", "Расходы не могут превышать полученную сумму.")
+        return data

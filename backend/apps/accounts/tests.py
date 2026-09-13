@@ -36,7 +36,11 @@ class RoleTests(TestCase):
         self.login(self.worker)
         self.assertNotContains(self.client.get(self.url), "Private client")
         self.assertEqual(self.client.post(self.url, {"action": "start"}).status_code, 302)
-        self.assertEqual(self.client.post(self.url, {"action": "complete"}).status_code, 302)
+        self.assertEqual(self.client.post(self.url, {
+            "action": "preview_completion", "amount": "0", "expenses": "0",
+            "comment": "Выполнена работа",
+        }).status_code, 200)
+        self.assertEqual(self.client.post(self.url, {"action": "confirm_completion"}).status_code, 302)
         self.assertEqual(self.client.post(self.url, {"action": "pay"}).status_code, 403)
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, "completed")

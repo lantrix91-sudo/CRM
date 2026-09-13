@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -54,6 +56,36 @@ def transition_order(pk, action, actor=None):
     order.status = transitions[action][1]
     order.save(update_fields=("status", "paid_at", "completed_at", "worker_percentage"))
     record_event(order, actor, {"start": "Мастер принял заказ и приступил", "complete": "Мастер подтвердил завершение", "pay": "Подтверждена оплата"}[action])
+    return order
+
+
+@transaction.atomic
+def complete_order_with_payment(pk, amount, expenses, comment, actor=None, completion_event=None):
+    """Persist the shared Telegram/Web completion sequence for an ordinary order."""
+    order = Order.objects.select_for_update().get(pk=pk)
+    if order.status != Order.Status.IN_PROGRESS:
+        raise ValidationError("Завершить заказ можно только в работе.")
+    if amount is None or amount < Decimal("0"):
+        raise ValidationError("Укажите сумму от 0.")
+    if expenses is None or expenses < Decimal("0") or expenses > amount:
+        raise ValidationError("Расходы не могут превышать полученную сумму.")
+    if not isinstance(comment, str) or not comment.strip() or len(comment.strip()) > 2000:
+        raise ValidationError("Укажите, что было сделано (до 2000 символов).")
+
+    order.expenses = expenses
+    order.work_comment = comment.strip()
+    order.save(update_fields=("expenses", "work_comment"))
+    transition_order(order.pk, "complete", actor=actor)
+    if amount > 0:
+        order.amount = amount
+        order.received_amount = amount
+        order.received_at = timezone.now()
+        order.save(update_fields=("amount", "received_amount", "received_at"))
+        transition_order(order.pk, "pay", actor=actor)
+    record_event(order, actor, completion_event or (
+        f"Получена оплата: {amount} KZT" + ("; без оплаты" if amount == 0 else "")
+    ))
+    TelegramNotice.objects.filter(order=order, active=True).update(active=False)
     return order
 
 
@@ -166,10 +198,15 @@ def repeat_repair(pk, actor):
     return repeated
 
 
-def payment_split(order):
+_UNSET = object()
+
+
+def payment_split(order, amount=None, expenses=None, worker_percentage=_UNSET):
     from decimal import Decimal, ROUND_HALF_UP
-    net = (order.amount or Decimal("0")) - order.expenses
-    percentage = order.worker_percentage
+    net = (amount if amount is not None else (order.amount or Decimal("0"))) - (
+        expenses if expenses is not None else order.expenses
+    )
+    percentage = order.worker_percentage if worker_percentage is _UNSET else worker_percentage
     if percentage is None:
         return net, None, None
     worker_amount = (net * percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

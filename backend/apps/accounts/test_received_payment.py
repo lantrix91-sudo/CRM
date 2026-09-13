@@ -35,6 +35,100 @@ class ReceivedPaymentTests(TestCase):
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, "paid")
 
+    def test_web_completion_uses_payment_and_expense_sequence(self):
+        self.order.status = "in_progress"
+        self.order.amount = None
+        self.worker.percentage = 50
+        self.worker.save(update_fields=("percentage",))
+        self.order.save(update_fields=("status", "amount"))
+        preview = self.client.post(self.url, {
+            "action": "preview_completion",
+            "amount": "150.00",
+            "expenses": "30.00",
+            "comment": "Заменил насос",
+        })
+        self.assertEqual(preview.status_code, 200)
+        self.assertContains(preview, "Подтверждение завершения заказа")
+        self.assertContains(preview, "После расходов: 120")
+        self.assertContains(preview, "Доля мастера: 60")
+        self.assertContains(preview, "Доля компании: 60")
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, "in_progress")
+        self.assertEqual(self.order.expenses, 0)
+        back = self.client.post(self.url, {"action": "completion_back"})
+        self.assertEqual(back.status_code, 200)
+        self.assertContains(back, 'value="150.00"')
+        self.assertContains(back, 'value="30.00"')
+        preview = self.client.post(self.url, {
+            "action": "preview_completion",
+            "amount": "150.00",
+            "expenses": "30.00",
+            "comment": "Заменил насос",
+        })
+        self.assertContains(preview, "Подтверждение завершения заказа")
+        response = self.client.post(self.url, {"action": "confirm_completion"})
+        self.assertEqual(response.status_code, 302)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, "paid")
+        self.assertEqual(self.order.amount, 150)
+        self.assertEqual(self.order.expenses, 30)
+        self.assertEqual(self.order.received_amount, 150)
+        self.assertEqual(self.order.worker_percentage, self.worker.percentage)
+        self.assertEqual(self.order.work_comment, "Заменил насос")
+        self.assertEqual(self.order.events.count(), 3)
+        duplicate = self.client.post(self.url, {"action": "confirm_completion"})
+        self.assertEqual(duplicate.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.events.count(), 3)
+
+    def test_web_confirmation_revalidates_order_state(self):
+        self.order.status = "in_progress"
+        self.order.save(update_fields=("status",))
+        self.assertEqual(self.client.post(self.url, {
+            "action": "preview_completion", "amount": "100", "expenses": "0",
+            "comment": "Работа",
+        }).status_code, 200)
+        self.order.status = "assigned"
+        self.order.save(update_fields=("status",))
+        response = self.client.post(self.url, {"action": "confirm_completion"})
+        self.assertEqual(response.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, "assigned")
+        self.assertIsNone(self.order.paid_at)
+
+    def test_web_completion_rejects_invalid_expenses_and_replay(self):
+        self.order.status = "in_progress"
+        self.order.save(update_fields=("status",))
+        invalid = self.client.post(self.url, {
+            "action": "preview_completion",
+            "amount": "100.00",
+            "expenses": "101.00",
+            "comment": "Работа",
+        })
+        self.assertEqual(invalid.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, "in_progress")
+        self.assertFalse(self.order.events.exists())
+
+        valid = self.client.post(self.url, {
+            "action": "preview_completion",
+            "amount": "100.00",
+            "expenses": "10.00",
+            "comment": "Работа",
+        })
+        self.assertEqual(valid.status_code, 200)
+        valid = self.client.post(self.url, {"action": "confirm_completion"})
+        self.assertEqual(valid.status_code, 302)
+        event_count = self.order.events.count()
+        replay = self.client.post(self.url, {
+            "action": "confirm_completion",
+        })
+        self.assertEqual(replay.status_code, 200)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, "paid")
+        self.assertEqual(self.order.amount, 100)
+        self.assertEqual(self.order.events.count(), event_count)
+
     def test_invalid_data_and_stage(self):
         for data in ({"received_amount":"0"}, {"received_amount":"-1"}, {"received_amount":"NaN"}, {"received_amount":"1.001"}, {"received_method":"invalid"}):
             self.report(**data)

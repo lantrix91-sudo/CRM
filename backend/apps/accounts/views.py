@@ -4,14 +4,15 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import Count, Sum, Q
 from django.shortcuts import get_object_or_404, redirect, render
+from decimal import Decimal
 
 from .access import allowed, role_of, roles_required
-from .forms import ReceivedPaymentForm, ClientForm, LeadForm, OrderForm, EmployeeForm, ServiceForm
+from .forms import ReceivedPaymentForm, OrderCompletionForm, ClientForm, LeadForm, OrderForm, EmployeeForm, ServiceForm
 from .models import User
 from apps.leads.models import Lead, TelegramNotice
 from apps.orders.models import Order
 from apps.services.models import Service
-from apps.orders.services import convert_lead, transition_order, record_event
+from apps.orders.services import convert_lead, transition_order, complete_order_with_payment, record_event
 
 @login_required
 def home(request):
@@ -57,6 +58,14 @@ def order_detail(request, pk):
         order = get_object_or_404(queryset.select_for_update(), pk=pk)
         form = None
         payment_form = ReceivedPaymentForm(request.POST if request.method == "POST" and request.POST.get("action") == "received_payment" else None)
+        preview_key = f"order_completion_preview:{pk}"
+        preview = request.session.get(preview_key)
+        completion_form = OrderCompletionForm(
+            request.POST if request.method == "POST" and request.POST.get("action") in (
+                "complete_with_payment", "preview_completion",
+            ) else None,
+            initial=preview if preview and request.method == "GET" else None,
+        )
         if allowed(request.user, "manager", "operator") and order.status != "cancelled":
             form = OrderForm(request.POST if request.method == "POST" and request.POST.get("action") == "save" else None, instance=order)
         if request.method == "POST":
@@ -104,12 +113,73 @@ def order_detail(request, pk):
                         record_event(order, request.user, f"Сообщил о получении оплаты: {order.received_amount} KZT, {order.get_received_method_display()}")
                         messages.success(request, "Оплата сохранена. Заказ оплачен.")
                         return redirect("order-detail", pk=pk)
+                elif action == "preview_completion":
+                    if role_of(request.user) != "worker" or order.employee_id != request.user.pk:
+                        raise PermissionDenied
+                    if order.status != Order.Status.IN_PROGRESS or order.repeat_of_id:
+                        raise ValidationError("Предпросмотр завершения больше недоступен.")
+                    if completion_form.is_valid():
+                        from apps.orders.services import payment_split
+                        amount = completion_form.cleaned_data["amount"]
+                        expenses = completion_form.cleaned_data["expenses"]
+                        net, worker_amount, manager_amount = payment_split(
+                            order, amount=amount, expenses=expenses,
+                            worker_percentage=order.employee.percentage,
+                        )
+                        request.session[preview_key] = {
+                            "amount": str(amount), "expenses": str(expenses),
+                            "comment": completion_form.cleaned_data["comment"],
+                            "status": order.status, "employee_id": order.employee_id,
+                            "worker_percentage": str(order.employee.percentage) if order.employee.percentage is not None else None,
+                            "net": str(net), "worker_amount": str(worker_amount) if worker_amount is not None else None,
+                            "company_amount": str(manager_amount) if manager_amount is not None else None,
+                        }
+                        request.session.modified = True
+                        preview = request.session[preview_key]
+                    else:
+                        raise ValidationError("Проверьте сумму, расходы и комментарий.")
+                elif action == "completion_back":
+                    request.session.pop(preview_key, None)
+                    request.session.modified = True
+                    completion_form = OrderCompletionForm(initial=preview or None)
+                    preview = None
+                elif action == "confirm_completion":
+                    if role_of(request.user) != "worker" or order.employee_id != request.user.pk:
+                        raise PermissionDenied
+                    if not preview or order.status != Order.Status.IN_PROGRESS or order.employee_id != preview.get("employee_id"):
+                        request.session.pop(preview_key, None)
+                        request.session.modified = True
+                        raise ValidationError("Предпросмотр устарел. Заполните данные заново.")
+                    current_percentage = str(order.employee.percentage) if order.employee.percentage is not None else None
+                    if current_percentage != preview.get("worker_percentage"):
+                        request.session.pop(preview_key, None)
+                        request.session.modified = True
+                        raise ValidationError("Процент мастера изменился. Создайте новый предпросмотр.")
+                    complete_order_with_payment(
+                        pk, Decimal(preview["amount"]), Decimal(preview["expenses"]),
+                        preview["comment"], actor=request.user,
+                    )
+                    request.session.pop(preview_key, None)
+                    request.session.modified = True
+                    messages.success(request, "Заказ завершён.")
+                    return redirect("order-detail", pk=pk)
+                elif action == "complete_with_payment":
+                    if role_of(request.user) != "worker" or order.employee_id != request.user.pk:
+                        raise PermissionDenied
+                    if order.repeat_of_id:
+                        complete_order_with_payment(
+                            pk, 0, 0, "Повторка выполнена бесплатно", actor=request.user,
+                        )
+                    else:
+                        raise ValidationError("Сначала просмотрите и подтвердите завершение заказа.")
+                    messages.success(request, "Заказ завершён.")
+                    return redirect("order-detail", pk=pk)
                 elif action == "pay":
                     if not allowed(request.user, "manager"):
                         raise PermissionDenied
                     transition_order(pk, "pay", actor=request.user)
                     return redirect("order-detail", pk=pk)
-                elif action in ("start", "complete"):
+                elif action == "start":
                     if role_of(request.user) != "worker" or order.employee_id != request.user.pk:
                         raise PermissionDenied
                     transition_order(pk, action, actor=request.user)
@@ -129,7 +199,18 @@ def order_detail(request, pk):
                 messages.error(request, "; ".join(error.messages))
         from apps.orders.services import payment_split
         net, worker_amount, manager_amount = payment_split(order)
-        return render(request, "accounts/order.html", {"order": order, "form": form, "payment_form": payment_form, "payment_net": net, "payment_worker": worker_amount, "payment_manager": manager_amount})
+        preview_values = None
+        if preview:
+            preview_values = {
+                **preview,
+                "amount": Decimal(preview["amount"]),
+                "expenses": Decimal(preview["expenses"]),
+                "net": Decimal(preview["net"]),
+                "worker_amount": Decimal(preview["worker_amount"]) if preview["worker_amount"] is not None else None,
+                "company_amount": Decimal(preview["company_amount"]) if preview["company_amount"] is not None else None,
+                "worker_percentage": Decimal(preview["worker_percentage"]) if preview["worker_percentage"] is not None else None,
+            }
+        return render(request, "accounts/order.html", {"order": order, "form": form, "payment_form": payment_form, "completion_form": completion_form, "completion_preview": preview_values, "payment_net": net, "payment_worker": worker_amount, "payment_manager": manager_amount})
 
 @roles_required("manager", "operator")
 def edit_record(request, kind, pk=None):
