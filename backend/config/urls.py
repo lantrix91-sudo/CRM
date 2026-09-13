@@ -12,6 +12,9 @@ from apps.leads import reports
 urlpatterns = [
     path("settlements/", accounts.settlements, name="settlements"),
     path("settlements/<int:pk>/", accounts.settlements, name="worker-settlement"),
+    path("settlements/shifts/<int:pk>/", accounts.settlement_shift_detail, name="settlement-shift-detail"),
+    path("settlements/export/", accounts.settlement_export, name="settlement-export"),
+    path("settlements/<int:pk>/export/", accounts.settlement_export, name="worker-settlement-export"),
     path("profile/", accounts.profile, name="profile"),
     path("my-orders/history/", accounts.worker_history, name="worker-history"),
     path("api/orders/<int:pk>/assign/", OrderAssignAPI.as_view()),

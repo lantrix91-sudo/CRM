@@ -51,7 +51,7 @@ class ProfileTests(TestCase):
         response = self.client.get("/profile/")
 
         self.assertContains(response, "Стоимость услуг: 20000,00")
-        self.assertContains(response, "Расходы: 0,00")
+        self.assertContains(response, "Расходы: 0 KZT")
         self.assertContains(response, "После расходов: 20000,00")
         self.assertContains(response, "Процент мастера: 50,00 %")
         self.assertContains(response, "Доля мастера: 10000,00")
@@ -73,6 +73,26 @@ class ProfileTests(TestCase):
         self.assertContains(response, "После расходов: 17000,00")
         self.assertContains(response, "Доля мастера: 8500,00")
         self.assertContains(response, "Доля компании: 8500,00")
+
+    def test_worker_dashboard_has_today_month_and_current_shift_totals(self):
+        client = Client.objects.create(name="Dashboard client", phone="321")
+        service = Service.objects.create(name="Dashboard service")
+        Order.objects.create(
+            title="Dashboard order", client=client, service=service,
+            employee=self.worker, status="paid", amount=20000, expenses=3000,
+            worker_percentage=50,
+        )
+        self.client.force_login(self.worker)
+        response = self.client.get("/profile/")
+        dashboard = response.context["dashboard"]
+
+        for period in ("today", "month", "current_shift"):
+            self.assertEqual(dashboard[period]["order_count"], 1)
+            self.assertEqual(dashboard[period]["revenue"], Decimal("20000"))
+            self.assertEqual(dashboard[period]["expenses"], Decimal("3000"))
+        self.assertEqual(dashboard["today"]["worker_amount"], Decimal("8500"))
+        self.assertEqual(dashboard["current_shift"]["company_amount"], Decimal("8500"))
+        self.assertEqual(dashboard["current_shift"]["balance_due"], Decimal("8500"))
 
     def test_percentage_validation(self):
         for value in ("-1", "100.01"):

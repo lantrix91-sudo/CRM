@@ -1,5 +1,6 @@
 from decimal import Decimal
 import uuid
+from openpyxl import load_workbook
 from django.test import TestCase
 from django.core.exceptions import ValidationError, PermissionDenied
 from apps.accounts.models import User
@@ -74,6 +75,31 @@ class SettlementTests(TestCase):
         self.assertEqual(summary["carried_debt"], Decimal("0"))
         self.assertEqual(summary["total_balance_due"], Decimal("0"))
         self.assertEqual(SettlementShift.objects.get().balance, Decimal("0"))
+
+    def test_closed_shift_detail_and_excel_export_are_restricted_and_historical(self):
+        settle(self.worker.pk, self.manager, "close")
+        shift = SettlementShift.objects.get()
+        self.client.force_login(self.worker)
+
+        detail = self.client.get(f"/settlements/shifts/{shift.pk}/")
+        self.assertEqual(detail.status_code, 200)
+        self.assertContains(detail, f"Закрытая смена № {shift.pk}")
+        self.assertContains(detail, "Доля компании: 10800,00 KZT")
+        self.worker.percentage = 80
+        self.worker.save(update_fields=("percentage",))
+        self.assertContains(self.client.get(f"/settlements/shifts/{shift.pk}/"), "Процент мастера: 40,00")
+
+        export = self.client.get("/settlements/export/")
+        self.assertEqual(export.status_code, 200)
+        self.assertEqual(export["Content-Type"], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        workbook = load_workbook(filename=__import__("io").BytesIO(export.content), read_only=True)
+        rows = list(workbook.active.iter_rows(values_only=True))
+        self.assertEqual(rows[0][0], "Дата")
+        self.assertEqual(rows[-1][0], "Итого")
+        self.assertEqual(rows[-1][8], Decimal("10800.00"))
+
+        other = User.objects.create_user(username="other_worker", role="worker")
+        self.assertEqual(self.client.get(f"/settlements/shifts/{other.pk}/").status_code, 404)
 
     def test_validation_and_access(self):
         with self.assertRaises(PermissionDenied):

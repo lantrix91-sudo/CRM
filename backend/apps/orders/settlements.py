@@ -11,11 +11,13 @@ from .services import payment_split
 def totals(worker):
     orders = list(Order.objects.filter(employee=worker, status="paid", repeat_of__isnull=True, settlement_shift__isnull=True).order_by("pk"))
     current_shift_gross = Decimal("0")
+    current_shift_expenses = Decimal("0")
     current_shift_worker_share = Decimal("0")
     current_shift_company_share = Decimal("0")
     missing = []
     for order in orders:
         current_shift_gross += order.amount or Decimal("0")
+        current_shift_expenses += order.expenses or Decimal("0")
         _, worker_share, company_share = payment_split(order)
         if worker_share is None:
             missing.append(order.pk)
@@ -42,6 +44,7 @@ def totals(worker):
     return {
         "orders": orders,
         "current_shift_gross": current_shift_gross,
+        "current_shift_expenses": current_shift_expenses,
         "current_shift_worker_share": current_shift_worker_share,
         "current_shift_company_share": current_shift_company_share,
         "carried_debt": carried_debt,

@@ -257,6 +257,7 @@ def profile(request):
         from django.http import HttpResponseNotAllowed
         return HttpResponseNotAllowed(["GET"])
     from decimal import Decimal, ROUND_HALF_UP
+    from apps.orders.reporting import order_breakdown, worker_dashboard
     role = role_of(request.user)
     orders = Order.objects.none()
     if role == "worker":
@@ -265,21 +266,12 @@ def profile(request):
         orders = Order.objects.filter(employee__curator=request.user)
     elif role == "manager":
         orders = Order.objects.all()
-    from apps.orders.services import payment_split
     orders = orders.select_related("client", "service", "employee").order_by("-created_at")
     paid = orders.filter(status="paid", repeat_of__isnull=True)
     orders = list(orders[:100])
     for order in orders:
         if order.status == "paid":
-            net, worker_amount, company_amount = payment_split(order)
-            order.financial_breakdown = {
-                "service_amount": order.amount,
-                "expenses": order.expenses,
-                "net_amount": net,
-                "worker_percentage": order.worker_percentage,
-                "worker_amount": worker_amount,
-                "company_amount": company_amount,
-            }
+            order.financial_breakdown = order_breakdown(order)
     total = paid.aggregate(total=Sum("amount"))["total"] or Decimal("0")
     earnings = None if request.user.percentage is None else (total * request.user.percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     expenses_total = paid.aggregate(total=Sum("expenses"))["total"] or Decimal("0")
@@ -294,8 +286,67 @@ def profile(request):
             earnings += worker_amount if role == "worker" else manager_amount
     return render(request, "accounts/profile.html", {
         "orders": orders,
-        "show_earnings": role in ("worker", "curator", "manager"), "paid_total": total, "earnings": earnings, "expenses_total": expenses_total, "net_total": total - expenses_total,
+        "show_earnings": role in ("worker", "curator", "manager"), "paid_total": total,
+        "earnings": earnings, "expenses_total": expenses_total, "net_total": total - expenses_total,
+        "dashboard": worker_dashboard(request.user) if role == "worker" else None,
     })
+
+
+@roles_required("manager", "worker")
+def settlement_shift_detail(request, pk):
+    from apps.orders.models import SettlementShift
+    from apps.orders.reporting import closed_shift_detail
+    queryset = SettlementShift.objects.select_related("worker", "closed_by")
+    if role_of(request.user) == "worker":
+        queryset = queryset.filter(worker=request.user)
+    shift = get_object_or_404(queryset, pk=pk)
+    return render(request, "accounts/settlement_shift_detail.html", closed_shift_detail(shift))
+
+
+@roles_required("manager", "worker")
+def settlement_export(request, pk=None):
+    import openpyxl
+    from decimal import Decimal
+    from django.http import HttpResponse
+    from apps.orders.reporting import export_rows, parse_export_date
+
+    is_manager = allowed(request.user, "manager")
+    if is_manager:
+        worker = get_object_or_404(User, pk=pk, role="worker") if pk else get_object_or_404(User, pk=request.GET.get("worker"), role="worker")
+    else:
+        if pk and pk != request.user.pk:
+            raise PermissionDenied
+        worker = request.user
+    date_from = parse_export_date(request.GET.get("date_from"))
+    date_to = parse_export_date(request.GET.get("date_to"))
+    if request.GET.get("date_from") and date_from is None or request.GET.get("date_to") and date_to is None:
+        raise ValidationError("Дата должна быть указана в формате ГГГГ-ММ-ДД.")
+    if date_from and date_to and date_from > date_to:
+        raise ValidationError("Дата начала не может быть позже даты окончания.")
+    rows = export_rows(worker, date_from, date_to)
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Финансы"
+    headers = ["Дата", "Номер заказа", "Тип операции", "Стоимость услуг", "Расходы", "После расходов", "Процент мастера", "Доля мастера", "Доля компании", "Перевод", "Остаток", "Комментарий"]
+    sheet.append(headers)
+    for row in rows:
+        sheet.append([
+            row["date"].strftime("%Y-%m-%d %H:%M") if row["date"] else "",
+            row["order_number"], row["operation"], row["service_amount"], row["expenses"],
+            row["net_amount"], row["worker_percentage"], row["worker_amount"],
+            row["company_amount"], row["transfer_amount"], row["remaining_balance"], row["comment"],
+        ])
+    totals_row = len(rows) + 3
+    sheet.cell(totals_row, 1, "Итого")
+    for column, key in ((4, "service_amount"), (5, "expenses"), (6, "net_amount"), (8, "worker_amount"), (9, "company_amount"), (10, "transfer_amount")):
+        sheet.cell(totals_row, column, sum((row[key] or Decimal("0") for row in rows), Decimal("0")))
+    sheet.cell(totals_row, 11, rows[-1]["remaining_balance"] if rows else Decimal("0"))
+    for column in range(1, len(headers) + 1):
+        sheet.column_dimensions[openpyxl.utils.get_column_letter(column)].width = 18
+    response = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    response["Content-Disposition"] = f'attachment; filename="worker-{worker.pk}-financial-history.xlsx"'
+    workbook.save(response)
+    return response
 
 
 @roles_required("manager", "worker")
