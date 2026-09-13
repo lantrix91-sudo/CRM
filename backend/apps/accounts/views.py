@@ -100,6 +100,8 @@ def order_detail(request, pk):
                 elif action == "received_payment":
                     if role_of(request.user) != "worker" or order.employee_id != request.user.pk:
                         raise PermissionDenied
+                    if order.repeat_of_id:
+                        raise ValidationError("Повторный ремонт выполняется бесплатно и не требует оплаты.")
                     if order.status != "completed":
                         raise ValidationError("Сообщить об оплате можно после завершения работы.")
                     if payment_form.is_valid():

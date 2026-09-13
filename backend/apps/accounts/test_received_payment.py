@@ -96,6 +96,46 @@ class ReceivedPaymentTests(TestCase):
         self.assertEqual(self.order.status, "assigned")
         self.assertIsNone(self.order.paid_at)
 
+    def test_free_repeat_is_completed_without_payment_or_awaiting_label(self):
+        original = Order.objects.create(
+            title="Original repair",
+            client=self.order.client,
+            service=self.order.service,
+            employee=self.worker,
+            status="paid",
+            amount=100,
+            worker_percentage=50,
+        )
+        repeat = Order.objects.create(
+            title="Repeat repair",
+            client=self.order.client,
+            service=self.order.service,
+            employee=self.worker,
+            repeat_of=original,
+            status="in_progress",
+        )
+        repeat_url = f"/orders/{repeat.pk}/"
+        response = self.client.post(repeat_url, {"action": "complete_with_payment"})
+        self.assertEqual(response.status_code, 302)
+        repeat.refresh_from_db()
+        self.assertEqual(repeat.status, "completed")
+        self.assertIsNone(repeat.amount)
+        self.assertIsNone(repeat.received_amount)
+        self.assertIsNone(repeat.paid_at)
+        self.assertContains(self.client.get(repeat_url), "Выполнен · бесплатно")
+        self.assertNotContains(self.client.get(repeat_url), "Выполнен, ожидает оплаты")
+        self.assertEqual(
+            self.client.post(repeat_url, {
+                "action": "received_payment",
+                "received_amount": "100",
+                "received_method": "cash",
+            }).status_code,
+            200,
+        )
+        repeat.refresh_from_db()
+        self.assertEqual(repeat.status, "completed")
+        self.assertIsNone(repeat.paid_at)
+
     def test_web_completion_rejects_invalid_expenses_and_replay(self):
         self.order.status = "in_progress"
         self.order.save(update_fields=("status",))
@@ -130,6 +170,7 @@ class ReceivedPaymentTests(TestCase):
         self.assertEqual(self.order.events.count(), event_count)
 
     def test_invalid_data_and_stage(self):
+        self.assertContains(self.client.get(self.url), "Выполнен, ожидает оплаты")
         for data in ({"received_amount":"0"}, {"received_amount":"-1"}, {"received_amount":"NaN"}, {"received_amount":"1.001"}, {"received_method":"invalid"}):
             self.report(**data)
             self.order.refresh_from_db()

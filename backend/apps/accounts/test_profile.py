@@ -59,6 +59,23 @@ class ProfileTests(TestCase):
         self.assertContains(response, "Доля мастера: 10000,00")
         self.assertContains(response, "Доля компании: 10000,00")
 
+    def test_completed_repeat_is_not_in_dashboard_revenue(self):
+        client = Client.objects.create(name="Repeat dashboard client", phone="555")
+        service = Service.objects.create(name="Repeat dashboard service")
+        original = Order.objects.create(
+            title="Original", client=client, service=service,
+            employee=self.worker, status="paid", amount=10000,
+            worker_percentage=50, paid_at=timezone.now(),
+        )
+        Order.objects.create(
+            title="Free repeat", client=client, service=service,
+            employee=self.worker, repeat_of=original, status="completed",
+        )
+        self.client.force_login(self.worker)
+        response = self.client.get("/profile/")
+        self.assertEqual(response.context["dashboard"]["today"]["revenue"], Decimal("10000"))
+        self.assertNotContains(response, "Free repeat")
+
     def test_paid_breakdown_deducts_expenses_before_shares(self):
         client = Client.objects.create(name="Expenses client", phone="456")
         service = Service.objects.create(name="Expenses service")

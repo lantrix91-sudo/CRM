@@ -185,6 +185,21 @@ class SettlementTests(TestCase):
         self.assertEqual(order_row["comment"], "")
         self.assertEqual(transfer_row["comment"], "")
 
+    def test_repeat_repairs_are_excluded_from_settlement_and_export_financials(self):
+        repeat = Order.objects.create(
+            title="Free repeat",
+            client=self.order.client,
+            service=self.order.service,
+            employee=self.worker,
+            repeat_of=self.order,
+            status="completed",
+        )
+        before = totals(self.worker)
+        self.assertEqual(before["current_shift_gross"], Decimal("20000"))
+        self.assertEqual(before["current_shift_company_share"], Decimal("10800"))
+        rows = export_rows(self.worker)
+        self.assertNotIn(repeat.pk, [row["order_number"] for row in rows])
+
     def test_validation_and_access(self):
         with self.assertRaises(PermissionDenied):
             settle(self.worker.pk, self.worker, "close")

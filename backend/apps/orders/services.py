@@ -65,6 +65,8 @@ def complete_order_with_payment(pk, amount, expenses, comment, actor=None, compl
     order = Order.objects.select_for_update().get(pk=pk)
     if order.status != Order.Status.IN_PROGRESS:
         raise ValidationError("Завершить заказ можно только в работе.")
+    if order.repeat_of_id and (amount != Decimal("0") or expenses != Decimal("0")):
+        raise ValidationError("Повторный ремонт выполняется бесплатно.")
     if amount is None or amount < Decimal("0"):
         raise ValidationError("Укажите сумму от 0.")
     if expenses is None or expenses < Decimal("0") or expenses > amount:
