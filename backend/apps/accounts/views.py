@@ -370,6 +370,16 @@ def settlements(request, pk=None):
         pk = request.user.pk
     workers = User.objects.filter(role="worker").order_by("username")
     worker = get_object_or_404(workers, pk=pk) if pk else None
+    recent_transfers = worker.settlement_transfers.order_by("-created_at", "-pk")[:5] if worker else []
+    recent_shifts = worker.closed_shifts.order_by("-closed_at", "-pk")[:5] if worker else []
+    context = {
+        "worker": worker,
+        "workers": workers,
+        "recent_transfers": recent_transfers,
+        "recent_shifts": recent_shifts,
+        "form": None,
+        "can_manage": is_manager,
+    }
     class TransferForm(forms.Form):
         amount = forms.DecimalField(label="Получено от мастера (KZT)", max_digits=14, decimal_places=2, min_value=0.01)
         comment = forms.CharField(label="Комментарий", max_length=300, required=False)
@@ -386,9 +396,10 @@ def settlements(request, pk=None):
             elif action == "transfer" and form.is_valid():
                 settle(worker.pk, request.user, action, **form.cleaned_data)
             else:
-                return render(request, "accounts/settlements.html", {"worker": worker, "workers": workers, "summary": totals(worker), "form": form, "can_manage": is_manager})
+                context.update({"summary": totals(worker), "form": form})
+                return render(request, "accounts/settlements.html", context)
             return redirect("worker-settlement", pk=worker.pk)
         except ValidationError as error:
             messages.error(request, "; ".join(error.messages))
-    return render(request, "accounts/settlements.html", {"worker": worker, "workers": workers,
-                  "summary": totals(worker) if worker else None, "form": form, "can_manage": is_manager})
+    context.update({"summary": totals(worker) if worker else None, "form": form})
+    return render(request, "accounts/settlements.html", context)

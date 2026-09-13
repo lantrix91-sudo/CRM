@@ -172,3 +172,41 @@ class SettlementTests(TestCase):
         self.order.save()
         with self.assertRaises(ValidationError):
             settle(self.worker.pk, self.manager, "close")
+
+    def test_settlement_page_limits_history_but_export_keeps_older_records(self):
+        for index in range(6):
+            WorkerTransfer.objects.create(
+                worker=self.worker,
+                received_by=self.manager,
+                amount=Decimal(index + 1),
+                request_id=uuid.uuid4(),
+                comment=f"transfer-{index + 1}",
+            )
+            SettlementShift.objects.create(
+                worker=self.worker,
+                closed_by=self.manager,
+                manager_amount=Decimal("100"),
+                worker_amount=Decimal("100"),
+                balance=Decimal(index),
+            )
+
+        self.client.force_login(self.worker)
+        response = self.client.get("/settlements/")
+        self.assertEqual(response.status_code, 200)
+        recent_transfers = list(response.context["recent_transfers"])
+        recent_shifts = list(response.context["recent_shifts"])
+        self.assertEqual(len(recent_transfers), 5)
+        self.assertEqual(len(recent_shifts), 5)
+        self.assertEqual(recent_transfers, list(self.worker.settlement_transfers.order_by("-created_at", "-pk")[:5]))
+        self.assertEqual(recent_shifts, list(self.worker.closed_shifts.order_by("-closed_at", "-pk")[:5]))
+        self.assertNotContains(response, "transfer-1")
+        self.assertContains(response, "transfer-6")
+        oldest_shift = self.worker.closed_shifts.order_by("closed_at", "pk").first()
+        self.assertNotContains(response, f"Смена № {oldest_shift.pk}")
+
+        self.assertEqual(WorkerTransfer.objects.filter(worker=self.worker).count(), 6)
+        self.assertEqual(SettlementShift.objects.filter(worker=self.worker).count(), 6)
+        export = self.client.get("/settlements/export/")
+        workbook = load_workbook(filename=__import__("io").BytesIO(export.content), read_only=True)
+        values = [value for row in workbook.active.iter_rows(values_only=True) for value in row]
+        self.assertIn("transfer-1", values)
