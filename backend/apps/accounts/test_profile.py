@@ -8,6 +8,9 @@ from apps.orders.models import Order
 
 
 class ProfileTests(TestCase):
+    def setUp(self):
+        self.worker = User.objects.create_user(username="profile_worker", role="worker", percentage=50)
+
     def test_scoped_earnings_and_read_only_curator(self):
         curator = User.objects.create_user(username="curator", role="curator", percentage=10)
         operator = User.objects.create_user(username="operator", role="operator", percentage=5)
@@ -33,6 +36,43 @@ class ProfileTests(TestCase):
         self.assertEqual(self.client.get(f"/orders/{unrelated.pk}/").status_code, 404)
         self.assertEqual(self.client.post(f"/orders/{original.pk}/", {"action": "save"}).status_code, 403)
         self.assertEqual(self.client.get("/employees/").status_code, 403)
+
+    def test_paid_order_shows_stored_percentage_and_financial_breakdown(self):
+        client = Client.objects.create(name="Stored percentage client", phone="789")
+        service = Service.objects.create(name="Stored percentage service")
+        Order.objects.create(
+            title="Stored percentage order", client=client, service=service,
+            employee=self.worker, status="paid", amount=20000,
+            worker_percentage=50,
+        )
+        self.worker.percentage = 80
+        self.worker.save(update_fields=("percentage",))
+        self.client.force_login(self.worker)
+        response = self.client.get("/profile/")
+
+        self.assertContains(response, "Стоимость услуг: 20000,00")
+        self.assertContains(response, "Расходы: 0,00")
+        self.assertContains(response, "После расходов: 20000,00")
+        self.assertContains(response, "Процент мастера: 50,00 %")
+        self.assertContains(response, "Доля мастера: 10000,00")
+        self.assertContains(response, "Доля компании: 10000,00")
+
+    def test_paid_breakdown_deducts_expenses_before_shares(self):
+        client = Client.objects.create(name="Expenses client", phone="456")
+        service = Service.objects.create(name="Expenses service")
+        order = Order.objects.create(
+            title="Paid with expenses", client=client, service=service,
+            employee=self.worker, status="paid", amount=20000, expenses=3000,
+            worker_percentage=50,
+        )
+        self.client.force_login(self.worker)
+        response = self.client.get("/profile/")
+
+        self.assertContains(response, "Стоимость услуг: 20000,00")
+        self.assertContains(response, "Расходы: 3000,00")
+        self.assertContains(response, "После расходов: 17000,00")
+        self.assertContains(response, "Доля мастера: 8500,00")
+        self.assertContains(response, "Доля компании: 8500,00")
 
     def test_percentage_validation(self):
         for value in ("-1", "100.01"):

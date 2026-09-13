@@ -265,7 +265,21 @@ def profile(request):
         orders = Order.objects.filter(employee__curator=request.user)
     elif role == "manager":
         orders = Order.objects.all()
+    from apps.orders.services import payment_split
+    orders = orders.select_related("client", "service", "employee").order_by("-created_at")
     paid = orders.filter(status="paid", repeat_of__isnull=True)
+    orders = list(orders[:100])
+    for order in orders:
+        if order.status == "paid":
+            net, worker_amount, company_amount = payment_split(order)
+            order.financial_breakdown = {
+                "service_amount": order.amount,
+                "expenses": order.expenses,
+                "net_amount": net,
+                "worker_percentage": order.worker_percentage,
+                "worker_amount": worker_amount,
+                "company_amount": company_amount,
+            }
     total = paid.aggregate(total=Sum("amount"))["total"] or Decimal("0")
     earnings = None if request.user.percentage is None else (total * request.user.percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     expenses_total = paid.aggregate(total=Sum("expenses"))["total"] or Decimal("0")
@@ -279,7 +293,7 @@ def profile(request):
                 break
             earnings += worker_amount if role == "worker" else manager_amount
     return render(request, "accounts/profile.html", {
-        "orders": orders.select_related("client", "service", "employee").order_by("-created_at")[:100],
+        "orders": orders,
         "show_earnings": role in ("worker", "curator", "manager"), "paid_total": total, "earnings": earnings, "expenses_total": expenses_total, "net_total": total - expenses_total,
     })
 
