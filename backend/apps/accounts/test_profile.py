@@ -1,5 +1,7 @@
 from decimal import Decimal
 from django.test import TestCase
+from django.utils import timezone
+from datetime import timedelta
 from apps.accounts.models import User
 from apps.accounts.forms import EmployeeForm
 from apps.customers.models import Client
@@ -80,7 +82,7 @@ class ProfileTests(TestCase):
         Order.objects.create(
             title="Dashboard order", client=client, service=service,
             employee=self.worker, status="paid", amount=20000, expenses=3000,
-            worker_percentage=50,
+            worker_percentage=50, paid_at=timezone.now(),
         )
         self.client.force_login(self.worker)
         response = self.client.get("/profile/")
@@ -93,6 +95,63 @@ class ProfileTests(TestCase):
         self.assertEqual(dashboard["today"]["worker_amount"], Decimal("8500"))
         self.assertEqual(dashboard["current_shift"]["company_amount"], Decimal("8500"))
         self.assertEqual(dashboard["current_shift"]["balance_due"], Decimal("8500"))
+
+    def test_today_summary_uses_paid_at_and_excludes_unpaid_yesterday_and_repeats(self):
+        client = Client.objects.create(name="Today client", phone="654")
+        service = Service.objects.create(name="Today service")
+        today = timezone.now()
+        yesterday = today - timedelta(days=1)
+        Order.objects.create(
+            title="Today paid", client=client, service=service, employee=self.worker,
+            status="paid", amount=10000, expenses=2000, worker_percentage=40,
+            paid_at=today,
+        )
+        Order.objects.create(
+            title="Yesterday paid", client=client, service=service, employee=self.worker,
+            status="paid", amount=50000, expenses=5000, worker_percentage=40,
+            paid_at=yesterday,
+        )
+        Order.objects.create(
+            title="Unpaid", client=client, service=service, employee=self.worker,
+            status="completed", amount=30000, expenses=3000, worker_percentage=40,
+        )
+        self.client.force_login(self.worker)
+        summary = self.client.get("/profile/").context["dashboard"]["today"]
+        self.assertEqual(summary["order_count"], 1)
+        self.assertEqual(summary["revenue"], Decimal("10000"))
+        self.assertEqual(summary["expenses"], Decimal("2000"))
+        self.assertEqual(summary["net_amount"], Decimal("8000"))
+        self.assertEqual(summary["worker_amount"], Decimal("3200"))
+        self.assertEqual(summary["company_amount"], Decimal("4800"))
+
+    def test_manager_today_summary_aggregates_workers_and_can_select_worker(self):
+        manager = User.objects.create_user(username="today_manager", role="manager")
+        other = User.objects.create_user(username="other_today_worker", role="worker", percentage=50)
+        client = Client.objects.create(name="Manager today client", phone="987")
+        service = Service.objects.create(name="Manager today service")
+        now = timezone.now()
+        for worker, amount, expenses, percentage in (
+            (self.worker, Decimal("10000"), Decimal("2000"), Decimal("40")),
+            (other, Decimal("6000"), Decimal("1000"), Decimal("50")),
+        ):
+            Order.objects.create(
+                title="Manager today order", client=client, service=service,
+                employee=worker, status="paid", amount=amount, expenses=expenses,
+                worker_percentage=percentage, paid_at=now,
+            )
+        self.client.force_login(manager)
+        response = self.client.get("/profile/")
+        summary = response.context["dashboard"]["today"]
+        self.assertEqual(summary["order_count"], 2)
+        self.assertEqual(summary["revenue"], Decimal("16000"))
+        self.assertEqual(summary["expenses"], Decimal("3000"))
+        self.assertEqual(summary["worker_amount"], Decimal("5700"))
+        self.assertEqual(summary["company_amount"], Decimal("7300"))
+
+        selected = self.client.get(f"/profile/?worker={other.pk}").context["dashboard"]["today"]
+        self.assertEqual(selected["order_count"], 1)
+        self.assertEqual(selected["worker_amount"], Decimal("2500"))
+        self.assertEqual(selected["company_amount"], Decimal("2500"))
 
     def test_percentage_validation(self):
         for value in ("-1", "100.01"):

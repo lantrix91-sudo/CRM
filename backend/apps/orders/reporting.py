@@ -48,14 +48,22 @@ def financial_summary(orders):
     return summary
 
 
-def paid_orders(worker, start=None, end=None):
+def paid_orders(worker=None, start=None, end=None, legacy_fallback=False):
     queryset = Order.objects.filter(
-        employee=worker, status=Order.Status.PAID, repeat_of__isnull=True,
+        status=Order.Status.PAID, repeat_of__isnull=True,
     ).select_related("client", "service", "employee")
+    if worker is not None:
+        queryset = queryset.filter(employee=worker)
     if start:
-        queryset = queryset.filter(Q(paid_at__gte=start) | Q(paid_at__isnull=True, created_at__gte=start))
+        date_filter = Q(paid_at__gte=start)
+        if legacy_fallback:
+            date_filter |= Q(paid_at__isnull=True, created_at__gte=start)
+        queryset = queryset.filter(date_filter)
     if end:
-        queryset = queryset.filter(Q(paid_at__lt=end) | Q(paid_at__isnull=True, created_at__lt=end))
+        date_filter = Q(paid_at__lt=end)
+        if legacy_fallback:
+            date_filter |= Q(paid_at__isnull=True, created_at__lt=end)
+        queryset = queryset.filter(date_filter)
     return queryset.order_by("-paid_at", "-created_at", "-pk")
 
 
@@ -120,7 +128,7 @@ def parse_export_date(value):
 def export_rows(worker, date_from=None, date_to=None):
     start = local_day_bounds(date_from)[0] if date_from else None
     end = local_day_bounds(date_to)[1] if date_to else None
-    orders = paid_orders(worker, start, end)
+    orders = paid_orders(worker, start, end, legacy_fallback=True)
     transfers = WorkerTransfer.objects.filter(worker=worker)
     if start:
         transfers = transfers.filter(created_at__gte=start)
@@ -189,7 +197,7 @@ def export_opening_balance(worker, start):
             worker=worker, created_at__gt=latest_shift.closed_at, created_at__lt=start,
         ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
         pre_shift_orders = paid_orders(
-            worker, latest_shift.closed_at, start,
+            worker, latest_shift.closed_at, start, legacy_fallback=True,
         ).filter(settlement_shift__isnull=True)
         balance += sum(
             (order_breakdown(order)["company_amount"] or Decimal("0") for order in pre_shift_orders),
@@ -197,7 +205,7 @@ def export_opening_balance(worker, start):
         )
         return max(balance - transfers, Decimal("0"))
 
-    orders = paid_orders(worker, end=start)
+    orders = paid_orders(worker, end=start, legacy_fallback=True)
     company_total = sum(
         (order_breakdown(order)["company_amount"] or Decimal("0") for order in orders),
         Decimal("0"),

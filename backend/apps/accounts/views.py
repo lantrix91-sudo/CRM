@@ -257,7 +257,8 @@ def profile(request):
         from django.http import HttpResponseNotAllowed
         return HttpResponseNotAllowed(["GET"])
     from decimal import Decimal, ROUND_HALF_UP
-    from apps.orders.reporting import order_breakdown, worker_dashboard
+    from apps.orders.reporting import order_breakdown, financial_summary, local_day_bounds, worker_dashboard
+    from django.utils import timezone
     role = role_of(request.user)
     orders = Order.objects.none()
     if role == "worker":
@@ -265,13 +266,13 @@ def profile(request):
     elif role == "curator":
         orders = Order.objects.filter(employee__curator=request.user)
     elif role == "manager":
-        orders = Order.objects.all()
+        selected_worker = request.GET.get("worker")
+        if selected_worker:
+            orders = Order.objects.filter(employee_id=selected_worker, employee__role="worker")
+        else:
+            orders = Order.objects.filter(employee__role="worker")
     orders = orders.select_related("client", "service", "employee").order_by("-created_at")
     paid = orders.filter(status="paid", repeat_of__isnull=True)
-    orders = list(orders[:100])
-    for order in orders:
-        if order.status == "paid":
-            order.financial_breakdown = order_breakdown(order)
     total = paid.aggregate(total=Sum("amount"))["total"] or Decimal("0")
     earnings = None if request.user.percentage is None else (total * request.user.percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     expenses_total = paid.aggregate(total=Sum("expenses"))["total"] or Decimal("0")
@@ -284,11 +285,29 @@ def profile(request):
                 earnings = None
                 break
             earnings += worker_amount if role == "worker" else manager_amount
+    day_start, day_end = local_day_bounds(timezone.localdate())
+    today_orders = orders.filter(
+        status="paid", repeat_of__isnull=True,
+        paid_at__gte=day_start, paid_at__lt=day_end,
+    )
+    if role == "worker":
+        dashboard = worker_dashboard(request.user)
+        dashboard["today"] = financial_summary(today_orders)
+    elif role == "manager":
+        dashboard = {"today": financial_summary(today_orders), "date": timezone.localdate()}
+    else:
+        dashboard = None
+    if dashboard:
+        dashboard["date"] = timezone.localdate()
+    orders = list(orders[:100])
+    for order in orders:
+        if order.status == "paid":
+            order.financial_breakdown = order_breakdown(order)
     return render(request, "accounts/profile.html", {
         "orders": orders,
         "show_earnings": role in ("worker", "curator", "manager"), "paid_total": total,
         "earnings": earnings, "expenses_total": expenses_total, "net_total": total - expenses_total,
-        "dashboard": worker_dashboard(request.user) if role == "worker" else None,
+        "dashboard": dashboard,
     })
 
 
