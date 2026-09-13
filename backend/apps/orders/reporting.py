@@ -160,7 +160,7 @@ def export_rows(worker, date_from=None, date_to=None):
             **breakdown,
             "transfer_amount": Decimal("0"),
             "remaining_balance": Decimal("0"),
-            "comment": "",
+            "comment": order.work_comment or "",
         })
     for transfer in transfers:
         rows.append({

@@ -155,6 +155,36 @@ class SettlementTests(TestCase):
         self.assertEqual(sum(row["company_amount"] for row in rows), Decimal("19000"))
         self.assertEqual(sum(row["transfer_amount"] for row in rows), Decimal("24200"))
 
+    def test_export_keeps_order_and_transfer_comments_in_their_own_rows(self):
+        from django.utils import timezone
+
+        self.order.work_comment = "Заменил сливной насос, почистил фильтр"
+        self.order.paid_at = timezone.now()
+        self.order.save(update_fields=("work_comment", "paid_at"))
+        transfer = WorkerTransfer.objects.create(
+            worker=self.worker,
+            received_by=self.manager,
+            amount=Decimal("100"),
+            comment="Перевод за наличные расходы",
+            request_id=uuid.uuid4(),
+        )
+        rows = export_rows(self.worker)
+        order_row = next(row for row in rows if row["order_number"] == self.order.pk)
+        transfer_row = next(row for row in rows if row["transfer_amount"] == transfer.amount)
+        self.assertEqual(order_row["comment"], self.order.work_comment)
+        self.assertEqual(transfer_row["comment"], transfer.comment)
+        self.assertNotEqual(order_row["comment"], transfer_row["comment"])
+
+        self.order.work_comment = ""
+        self.order.save(update_fields=("work_comment",))
+        transfer.comment = ""
+        transfer.save(update_fields=("comment",))
+        rows = export_rows(self.worker)
+        order_row = next(row for row in rows if row["order_number"] == self.order.pk)
+        transfer_row = next(row for row in rows if row["transfer_amount"] == transfer.amount)
+        self.assertEqual(order_row["comment"], "")
+        self.assertEqual(transfer_row["comment"], "")
+
     def test_validation_and_access(self):
         with self.assertRaises(PermissionDenied):
             settle(self.worker.pk, self.worker, "close")
