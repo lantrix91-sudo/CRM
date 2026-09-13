@@ -337,10 +337,19 @@ def settlement_export(request, pk=None):
             row["company_amount"], row["transfer_amount"], row["remaining_balance"], row["comment"],
         ])
     totals_row = len(rows) + 3
-    sheet.cell(totals_row, 1, "Итого")
+    sheet.cell(totals_row, 1, "Итого по операциям")
     for column, key in ((4, "service_amount"), (5, "expenses"), (6, "net_amount"), (8, "worker_amount"), (9, "company_amount"), (10, "transfer_amount")):
         sheet.cell(totals_row, column, sum((row[key] or Decimal("0") for row in rows), Decimal("0")))
-    sheet.cell(totals_row, 11, rows[-1]["remaining_balance"] if rows else Decimal("0"))
+    opening = rows[0]["remaining_balance"] if rows and rows[0]["operation"] == "Входящий остаток" else Decimal("0")
+    closing = rows[-1]["remaining_balance"] if rows else opening
+    summary_rows = [
+        ("Входящий остаток", opening),
+        ("Переводы получены", sum((row["transfer_amount"] for row in rows), Decimal("0"))),
+        ("Остаток на конец периода", closing),
+    ]
+    for offset, (label, value) in enumerate(summary_rows, start=1):
+        sheet.cell(totals_row + offset, 1, label)
+        sheet.cell(totals_row + offset, 2, value)
     for column in range(1, len(headers) + 1):
         sheet.column_dimensions[openpyxl.utils.get_column_letter(column)].width = 18
     response = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

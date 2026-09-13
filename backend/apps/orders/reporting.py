@@ -1,7 +1,7 @@
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from .models import Order, SettlementShift, WorkerTransfer
@@ -126,11 +126,27 @@ def export_rows(worker, date_from=None, date_to=None):
         transfers = transfers.filter(created_at__gte=start)
     if end:
         transfers = transfers.filter(created_at__lt=end)
+    opening_balance = export_opening_balance(worker, start)
     rows = []
+    if opening_balance:
+        rows.append({
+            "date": start,
+            "order_number": "",
+            "operation": "Входящий остаток",
+            "service_amount": Decimal("0"),
+            "expenses": Decimal("0"),
+            "net_amount": Decimal("0"),
+            "worker_percentage": None,
+            "worker_amount": Decimal("0"),
+            "company_amount": Decimal("0"),
+            "transfer_amount": Decimal("0"),
+            "remaining_balance": opening_balance,
+            "comment": "Долг до начала выбранного периода",
+        })
     for order in orders:
         breakdown = order_breakdown(order)
         rows.append({
-            "date": order.paid_at,
+            "date": order.paid_at or order.created_at,
             "order_number": order.pk,
             "operation": "Оплата заказа",
             **breakdown,
@@ -154,8 +170,39 @@ def export_rows(worker, date_from=None, date_to=None):
             "comment": transfer.comment,
         })
     rows.sort(key=lambda row: (row["date"], row["order_number"] or 0))
-    balance = Decimal("0")
-    for row in rows:
+    balance = opening_balance
+    for row in rows[1:] if opening_balance else rows:
         balance += row["company_amount"] - row["transfer_amount"]
         row["remaining_balance"] = max(balance, Decimal("0"))
     return rows
+
+
+def export_opening_balance(worker, start):
+    if not start:
+        return Decimal("0")
+    latest_shift = SettlementShift.objects.filter(
+        worker=worker, closed_at__lt=start,
+    ).order_by("-closed_at", "-pk").first()
+    if latest_shift:
+        balance = latest_shift.balance
+        transfers = WorkerTransfer.objects.filter(
+            worker=worker, created_at__gt=latest_shift.closed_at, created_at__lt=start,
+        ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+        pre_shift_orders = paid_orders(
+            worker, latest_shift.closed_at, start,
+        ).filter(settlement_shift__isnull=True)
+        balance += sum(
+            (order_breakdown(order)["company_amount"] or Decimal("0") for order in pre_shift_orders),
+            Decimal("0"),
+        )
+        return max(balance - transfers, Decimal("0"))
+
+    orders = paid_orders(worker, end=start)
+    company_total = sum(
+        (order_breakdown(order)["company_amount"] or Decimal("0") for order in orders),
+        Decimal("0"),
+    )
+    transfers = WorkerTransfer.objects.filter(
+        worker=worker, created_at__lt=start,
+    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    return max(company_total - transfers, Decimal("0"))
