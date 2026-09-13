@@ -17,7 +17,7 @@ from .services import convert_lead, transition_order
 class OrderWorkflowTests(TestCase):
     def setUp(self):
         self.employee = get_user_model().objects.create_user(
-            username="master", is_staff=False, role="worker", telegram_chat_id=9988,
+            username="master", is_staff=False, role="worker", telegram_chat_id=9988, percentage=30,
         )
         self.customer = Client.objects.create(name="Client", phone="+77000000000")
         self.service = Service.objects.create(name="Repair")
@@ -93,7 +93,7 @@ class OrderWorkflowTests(TestCase):
         notice.amount_prompt_id = 55
         notice.save()
         from apps.leads.telegram import apply_amount_message
-        apply_amount_message({"from": {"id": 9988}, "chat": {"id": 9988, "type": "private"}, "reply_to_message": {"message_id": 55}, "text": "0"})
+        apply_amount_message({"from": {"id": 9988}, "chat": {"id": 9988, "type": "private"}, "reply_to_message": {"message_id": 55}, "text": "0\n0\nRepair"})
         order.refresh_from_db()
         self.lead.refresh_from_db()
         self.assertEqual(order.status, Order.Status.COMPLETED)
@@ -122,7 +122,9 @@ class OrderWorkflowTests(TestCase):
         process_update(api, {"callback_query": {"id": "cb", "data": f"{notice.pk.hex}:finish", "from": {"id":9988}, "message":{"message_id":44,"chat":{"id":9988,"type":"private"}}}})
         notice.refresh_from_db()
         self.assertEqual(notice.amount_prompt_id, 55)
-        message = {"from":{"id":9988},"chat":{"id":9988,"type":"private"},"reply_to_message":{"message_id":55},"text":"15000,50"}
+        notice.payment_step = ""  # Legacy three-line prompts remain supported.
+        notice.save(update_fields=("payment_step",))
+        message = {"from":{"id":9988},"chat":{"id":9988,"type":"private"},"reply_to_message":{"message_id":55},"text":"15000,50\n0\nRepair"}
         for invalid in ("-1", "NaN", "Infinity", "1.001", "text"):
             apply_amount_message({**message,"text":invalid})
             order.refresh_from_db()
@@ -165,7 +167,7 @@ class OrderWorkflowTests(TestCase):
             if method == "editMessageText":
                 raise TelegramError("Unavailable")
         api.call.side_effect = transport
-        process_update(api, {"message": {**message, "text": "0"}})
+        process_update(api, {"message": {**message, "text": "0\n0\nRepair"}})
         edit = next(call for call in api.call.call_args_list if call.args[0] == "editMessageText")
         self.assertEqual(edit.kwargs["chat_id"], 9988)
         self.assertEqual(edit.kwargs["message_id"], 44)
@@ -326,3 +328,132 @@ class OrderWorkflowTests(TestCase):
         self.assertFalse(notice.active)
         self.assertFalse(any(c.args[0] == "sendMessage" for c in api.call.call_args_list))
         self.assertEqual(api.call.call_args.kwargs["reply_markup"], {"inline_keyboard": []})
+
+    def test_expenses_split_and_percentage_snapshot(self):
+        from apps.leads.telegram import apply_amount_message
+        from apps.orders.services import payment_split
+        order, notice = self.accepted_notice()
+        notice.amount_prompt_id = 55
+        notice.save()
+        message = {"from": {"id": 9988}, "chat": {"id": 9988, "type": "private"},
+                   "reply_to_message": {"message_id": 55}, "text": "20000\n2000\nReplaced pump"}
+        apply_amount_message({**message, "text": "20000\n20001\nRepair"})
+        order.refresh_from_db()
+        self.assertEqual(order.status, "in_progress")
+        apply_amount_message(message)
+        order.refresh_from_db()
+        self.assertEqual(order.expenses, 2000)
+        self.assertEqual(order.work_comment, "Replaced pump")
+        self.assertEqual(payment_split(order), (Decimal("18000"), Decimal("5400"), Decimal("12600")))
+        self.employee.percentage = 70
+        self.employee.save()
+        self.assertEqual(payment_split(order)[1], Decimal("5400"))
+
+    def test_payment_asks_three_separate_questions(self):
+        from apps.leads.telegram import process_update
+        order, notice = self.accepted_notice()
+        api = Mock()
+        api.call.return_value = {"message_id": 55}
+        process_update(api, {"callback_query": self.callback_for(notice, "finish")})
+        def reply(prompt_id, text):
+            process_update(api, {"message": {"from": {"id": 9988},
+                "chat": {"id": 9988, "type": "private"},
+                "reply_to_message": {"message_id": prompt_id}, "text": text}})
+        api.call.return_value = {"message_id": 56}
+        reply(55, "20000")
+        notice.refresh_from_db()
+        self.assertEqual(notice.payment_step, "expenses")
+        self.assertEqual(notice.draft_amount, 20000)
+        reply(55, "99999")
+        notice.refresh_from_db()
+        self.assertEqual(notice.draft_amount, 20000)
+        reply(56, "30000")
+        notice.refresh_from_db()
+        self.assertEqual(notice.payment_step, "expenses")
+        api.call.return_value = {"message_id": 57}
+        reply(56, "2000")
+        order.refresh_from_db()
+        self.assertEqual(order.status, "in_progress")
+        notice.refresh_from_db()
+        self.assertEqual(notice.payment_step, "comment")
+        reply(57, "Pump purchase")
+        order.refresh_from_db()
+        self.assertEqual(order.status, "in_progress")
+        process_update(api, {"callback_query": self.callback_for(notice, "confirm_payment")})
+        order.refresh_from_db()
+        self.assertEqual(order.status, "paid")
+        self.assertEqual(order.amount, 20000)
+        self.assertEqual(order.expenses, 2000)
+        self.assertEqual(order.work_comment, "Pump purchase")
+
+    def test_payment_without_percentage_cleans_up_questions(self):
+        from apps.leads.telegram import process_update
+        self.employee.percentage = None
+        self.employee.save()
+        order, notice = self.accepted_notice()
+        api = Mock()
+        api.call.return_value = {"message_id": 55}
+        process_update(api, {"callback_query": self.callback_for(notice, "finish")})
+        for prompt, reply_id, value, next_id in ((55, 101, "20000", 56), (56, 102, "2000", 57), (57, 103, "Pump", 58)):
+            api.call.return_value = {"message_id": next_id}
+            process_update(api, {"message": {"from": {"id": 9988}, "chat": {"id": 9988, "type": "private"},
+                "reply_to_message": {"message_id": prompt}, "message_id": reply_id, "text": value}})
+            api.call.assert_any_call("deleteMessage", chat_id=9988, message_id=prompt)
+            api.call.assert_any_call("deleteMessage", chat_id=9988, message_id=reply_id)
+        order.refresh_from_db()
+        self.assertEqual(order.status, "in_progress")
+        process_update(api, {"callback_query": self.callback_for(notice, "confirm_payment")})
+        order.refresh_from_db()
+        self.assertEqual(order.status, "paid")
+        self.assertEqual(order.expenses, 2000)
+        self.assertIsNone(order.worker_percentage)
+
+    def test_three_steps_plain_messages_and_no_restart(self):
+        from apps.leads.telegram import process_update
+        order, notice = self.accepted_notice()
+        api = Mock()
+        api.call.return_value = {"message_id": 55}
+        callback = self.callback_for(notice, "finish")
+        process_update(api, {"callback_query": callback})
+        api.call.return_value = {"message_id": 56}
+        process_update(api, {"message": {"from": {"id": 9988}, "chat": {"id": 9988, "type": "private"}, "text": "10000"}})
+        notice.refresh_from_db()
+        self.assertEqual(notice.payment_step, "expenses")
+        process_update(api, {"callback_query": callback})
+        notice.refresh_from_db()
+        self.assertEqual(notice.payment_step, "expenses")
+        self.assertEqual(notice.draft_amount, 10000)
+        api.call.return_value = {"message_id": 57}
+        process_update(api, {"message": {"from": {"id": 9988}, "chat": {"id": 9988, "type": "private"}, "text": "2000"}})
+        process_update(api, {"message": {"from": {"id": 9988}, "chat": {"id": 9988, "type": "private"}, "text": "Changed pump"}})
+        order.refresh_from_db()
+        self.assertEqual(order.status, "in_progress")
+        process_update(api, {"callback_query": self.callback_for(notice, "confirm_payment")})
+        order.refresh_from_db()
+        self.assertEqual(order.status, "paid")
+        self.assertEqual(order.work_comment, "Changed pump")
+
+    def test_edit_confirmation_and_duplicate_confirm(self):
+        from apps.leads.telegram import process_update
+        order, notice = self.accepted_notice()
+        notice.payment_step = "confirm"
+        notice.amount_prompt_id = 55
+        notice.draft_amount, notice.draft_expenses, notice.draft_comment = 20000, 2000, "Repair"
+        notice.save()
+        api = Mock()
+        api.call.return_value = {"message_id": 56}
+        process_update(api, {"callback_query": self.callback_for(notice, "edit_payment")})
+        notice.refresh_from_db()
+        self.assertEqual(notice.payment_step, "amount")
+        self.assertIsNone(notice.draft_amount)
+        self.assertIsNone(apply_callback(self.callback_for(notice, "confirm_payment"))[1])
+        notice.payment_step = "confirm"
+        notice.draft_amount, notice.draft_expenses, notice.draft_comment = 10000, 1000, "Corrected"
+        notice.save()
+        process_update(api, {"callback_query": self.callback_for(notice, "confirm_payment")})
+        count = order.events.count()
+        process_update(api, {"callback_query": self.callback_for(notice, "confirm_payment")})
+        self.assertEqual(order.events.count(), count)
+        order.refresh_from_db()
+        self.assertEqual(order.amount, 10000)
+        self.assertEqual(order.expenses, 1000)

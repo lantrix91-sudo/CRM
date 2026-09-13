@@ -15,10 +15,14 @@ class Order(models.Model):
         PAID = "paid", "Оплачен"
         CANCELLED = "cancelled", "Отменён клиентом"
 
+    settlement_shift = models.ForeignKey("SettlementShift", null=True, blank=True, on_delete=models.PROTECT, related_name="orders")
     repeat_of = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT, related_name="repeat_repairs", verbose_name="повторный ремонт заказа")
     lead = models.OneToOneField("leads.Lead", on_delete=models.PROTECT, null=True, blank=True, related_name="order", verbose_name="исходный лид")
     status = models.CharField("этап", max_length=20, choices=Status.choices, default=Status.NEW, db_index=True)
     amount = models.DecimalField("стоимость (KZT)", max_digits=12, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(0)])
+    expenses = models.DecimalField("расходы (KZT)", max_digits=12, decimal_places=2, default=0, validators=[MinValueValidator(0)])
+    work_comment = models.TextField("что сделано", blank=True, max_length=2000)
+    worker_percentage = models.DecimalField("процент мастера при оплате", max_digits=5, decimal_places=2, null=True, blank=True)
     completed_at = models.DateTimeField("выполнен", null=True, blank=True)
     cancellation_reason = models.CharField("причина отмены", max_length=300, blank=True)
     cancelled_at = models.DateTimeField("дата отмены", null=True, blank=True)
@@ -71,3 +75,21 @@ class OrderEvent(models.Model):
 
     class Meta:
         ordering = ("created_at", "pk")
+
+
+class SettlementShift(models.Model):
+    worker = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="closed_shifts")
+    closed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="shifts_closed")
+    closed_at = models.DateTimeField(auto_now_add=True)
+    manager_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    worker_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    balance = models.DecimalField(max_digits=14, decimal_places=2)
+
+
+class WorkerTransfer(models.Model):
+    worker = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="settlement_transfers")
+    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="received_transfers")
+    amount = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(0.01)])
+    comment = models.CharField(max_length=300, blank=True)
+    request_id = models.UUIDField(unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)

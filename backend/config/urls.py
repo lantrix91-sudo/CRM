@@ -10,6 +10,9 @@ from apps.leads.telephony import IncomingCallAPI
 from apps.leads import reports
 
 urlpatterns = [
+    path("settlements/", accounts.settlements, name="settlements"),
+    path("settlements/<int:pk>/", accounts.settlements, name="worker-settlement"),
+    path("profile/", accounts.profile, name="profile"),
     path("my-orders/history/", accounts.worker_history, name="worker-history"),
     path("api/orders/<int:pk>/assign/", OrderAssignAPI.as_view()),
     path("", accounts.home),

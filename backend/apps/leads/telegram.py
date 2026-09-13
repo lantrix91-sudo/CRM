@@ -190,6 +190,19 @@ def apply_callback(callback):
         or notice.state != "sent" or not is_current(notice, lead)
     ):
         return "Нет доступа или назначение уже изменилось.", None, None
+    if notice.order_id and action in ("confirm_payment", "edit_payment"):
+        if lead.status != Order.Status.IN_PROGRESS or notice.payment_step != "confirm":
+            return "Расчёт уже изменён. Продолжите текущий ввод.", None, None
+        if action == "edit_payment":
+            notice.payment_step = ""
+            notice.amount_prompt_id = None
+            notice.save(update_fields=("payment_step", "amount_prompt_id"))
+            return "Введите данные заново.", notice, keyboard(notice, accepted=True)
+        text = apply_amount_message({"chat": {"id": notice.chat_id, "type": "private"},
+            "from": {"id": notice.chat_id}, "reply_to_message": {"message_id": notice.amount_prompt_id},
+            "text": notice.draft_comment}, confirmed=True)
+        notice.refresh_from_db()
+        return text, notice, {"inline_keyboard": []}
     if notice.order_id:
         from apps.orders.services import transition_order, record_event
         if lead.repeat_of_id and action in ("reject", "worker_reject", "client_reject"):
@@ -274,6 +287,18 @@ def process_update(api, update):
             api.call("editMessageText", chat_id=notice.chat_id, message_id=notice.message_id,
                      text=text + "\n" + details, reply_markup=markup)
             return
+        if notice and action == "confirm_payment":
+            api.call("editMessageText", chat_id=notice.chat_id, message_id=notice.message_id,
+                     text=notification_text(notice.order, accepted=True, completed=True) + "\n" + text,
+                     reply_markup=markup)
+            return
+        if notice and action == "edit_payment":
+            result = api.call("sendMessage", chat_id=notice.chat_id,
+                text=f"Заказ № {notice.order_id}. 1/3 · Сколько получил? /cancel — отмена.",
+                reply_markup={"force_reply": True})
+            TelegramNotice.objects.filter(pk=notice.pk).update(payment_step="amount", amount_prompt_id=result["message_id"], draft_amount=None, draft_expenses=None, draft_comment="")
+            api.call("editMessageReplyMarkup", chat_id=notice.chat_id, message_id=notice.message_id, reply_markup=markup)
+            return
         if notice and action == "accept":
             with transaction.atomic():
                 target = target_for(notice)
@@ -287,10 +312,12 @@ def process_update(api, update):
                 api.call("editMessageText", chat_id=notice.chat_id, message_id=notice.message_id,
                          text=notification_text(notice.order, accepted=True, completed=True), reply_markup=markup)
                 return
+            if notice.amount_prompt_id and notice.payment_step:
+                return
             result = api.call("sendMessage", chat_id=notice.chat_id,
-                text=f"Заказ № {notice.order_id}. Сколько получили? Введите сумму в KZT ответом на это сообщение (например, 15000 или 15000,50). Если оплаты нет — 0. Отмена — /cancel.",
+                text=f"Заказ № {notice.order_id}. 1/3 · Сколько получил? Сумма в KZT. /cancel — отмена.",
                 reply_markup={"force_reply": True, "selective": True})
-            TelegramNotice.objects.filter(pk=notice.pk, active=True).update(amount_prompt_id=result["message_id"])
+            TelegramNotice.objects.filter(pk=notice.pk, active=True).update(amount_prompt_id=result["message_id"], payment_step="amount", draft_amount=None, draft_expenses=None)
             return
         if notice:
             api.call("editMessageReplyMarkup", chat_id=notice.chat_id, message_id=notice.message_id, reply_markup=markup)
@@ -304,7 +331,7 @@ def process_update(api, update):
         if result:
             api.call("sendMessage", chat_id=chat["id"], text=result)
         return
-    result = apply_amount_message(message)
+    result = apply_amount_message(message, api=api)
     if result:
         logger.info("amount_reply chat=%s result=%s", chat.get("id"), "processed")
         notice = TelegramNotice.objects.filter(
@@ -329,17 +356,39 @@ def process_update(api, update):
                  text=f"Ваш Telegram ID: {chat['id']}. Передайте его администратору CRM для подключения уведомлений.")
 
 
+def clear_payment_messages(api, message):
+    if api is None:
+        return
+    chat_id = message.get("chat", {}).get("id")
+    for message_id in (message.get("reply_to_message", {}).get("message_id"), message.get("message_id")):
+        if not message_id:
+            continue
+        try:
+            api.call("deleteMessage", chat_id=chat_id, message_id=message_id)
+        except TelegramError:
+            logger.warning("payment_message_cleanup_failed chat=%s message=%s", chat_id, message_id)
+
+
 @transaction.atomic
-def apply_amount_message(message):
+def apply_amount_message(message, api=None, confirmed=False):
     from django import forms
     from django.core.exceptions import ValidationError
     from apps.orders.services import transition_order, record_event
     chat = message.get("chat", {})
     sender = message.get("from", {}).get("id")
     reply_id = message.get("reply_to_message", {}).get("message_id")
-    if chat.get("type") != "private" or not sender or sender != chat.get("id") or not reply_id:
+    if chat.get("type") != "private" or not sender or sender != chat.get("id"):
         return None
-    snapshot = TelegramNotice.objects.filter(chat_id=sender, amount_prompt_id=reply_id, order__isnull=False).first()
+    if reply_id:
+        snapshot = TelegramNotice.objects.filter(chat_id=sender, amount_prompt_id=reply_id, order__isnull=False).first()
+    else:
+        pending = list(TelegramNotice.objects.filter(chat_id=sender, active=True, state="sent",
+            amount_prompt_id__isnull=False, order__status="in_progress").exclude(payment_step="")[:2])
+        if len(pending) != 1:
+            return "Ответьте на вопрос нужного заказа через «Ответить»." if pending else None
+        snapshot = pending[0]
+        reply_id = snapshot.amount_prompt_id
+        message["reply_to_message"] = {"message_id": reply_id}
     if snapshot is None:
         return None
     order = target_for(snapshot)
@@ -353,12 +402,78 @@ def apply_amount_message(message):
     raw = message.get("text", "").strip()
     if raw == "/cancel":
         notice.amount_prompt_id = None
-        notice.save(update_fields=("amount_prompt_id",))
+        notice.payment_step = ""
+        notice.draft_amount = None
+        notice.draft_expenses = None
+        notice.save(update_fields=("amount_prompt_id", "payment_step", "draft_amount", "draft_expenses"))
+        clear_payment_messages(api, message)
         return "Ввод отменён. Заказ остаётся в работе."
-    try:
-        amount = forms.DecimalField(max_digits=12, decimal_places=2, min_value=0).clean(raw.replace(",", "."))
-    except ValidationError:
-        return "Введите число от 0 с максимум двумя знаками после запятой ответом на тот же запрос суммы."
+    if notice.payment_step == "confirm" and not confirmed:
+        return "Проверьте расчёт в сообщении заказа и нажмите «Подтвердить» или «Исправить»."
+    if notice.payment_step:
+        money = forms.DecimalField(max_digits=12, decimal_places=2, min_value=0)
+        if notice.payment_step in ("amount", "expenses"):
+            try:
+                value = money.clean(raw.replace(",", "."))
+            except ValidationError:
+                return "Введите сумму от 0, не более двух знаков после запятой. Ответьте на тот же вопрос."
+            if notice.payment_step == "expenses" and value > notice.draft_amount:
+                return "Расходы не могут превышать полученную сумму. Ответьте на тот же вопрос."
+            if api is None:
+                return "Продолжите ввод через Telegram."
+            next_step = "expenses" if notice.payment_step == "amount" else "comment"
+            prompt = "2/3 · Расходы, KZT (если нет — 0)." if next_step == "expenses" else "3/3 · Комментарий: что поменял или сделал? Затем проверим расчёт."
+            sent = api.call("sendMessage", chat_id=sender,
+                            text=f"Заказ № {order.pk}. {prompt} /cancel — отмена.",
+                            reply_markup={"force_reply": True, "selective": True})
+            if next_step == "expenses":
+                notice.draft_amount = value
+            else:
+                notice.draft_expenses = value
+            notice.payment_step = next_step
+            notice.amount_prompt_id = sent["message_id"]
+            notice.save(update_fields=("draft_amount", "draft_expenses", "payment_step", "amount_prompt_id"))
+            clear_payment_messages(api, message)
+            return None
+        if not raw or len(raw) > 2000:
+            return "Напишите, что поменяли или сделали (до 2000 символов)."
+        amount, expenses, comment = notice.draft_amount, notice.draft_expenses, raw
+    else:
+        try:
+            lines = raw.split("\n", 2)
+            if len(lines) != 3 or not lines[2].strip() or len(lines[2].strip()) > 2000:
+                return "Ответьте тремя строками: сумма, расходы, что сделано (до 2000 символов)."
+            money = forms.DecimalField(max_digits=12, decimal_places=2, min_value=0)
+            amount = money.clean(lines[0].strip().replace(",", "."))
+            expenses = money.clean(lines[1].strip().replace(",", "."))
+            if expenses > amount:
+                return "Расходы не могут превышать полученную сумму. Проверьте ответ."
+            comment = lines[2].strip()
+        except ValidationError:
+            return "Введите число от 0 с максимум двумя знаками после запятой ответом на тот же запрос суммы."
+    if notice.payment_step == "comment" and not confirmed:
+        if api is None:
+            return "Подтвердите расчёт в Telegram."
+        from decimal import Decimal, ROUND_HALF_UP
+        net = amount - expenses
+        percentage = notice.employee.percentage
+        split = "Процент не установлен — доли пока не рассчитаны."
+        if percentage is not None:
+            worker_part = (net * percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            split = f"Мастеру ({percentage}%): {worker_part} KZT\nРуководителю: {net - worker_part} KZT"
+        api.call("editMessageText", chat_id=sender, message_id=notice.message_id,
+            text=f"Заказ № {order.pk}. Проверьте расчёт\nПолучено: {amount} KZT\nРасходы: {expenses} KZT\nПосле расходов: {net} KZT\n{split}\nЧто сделано: {comment}",
+            reply_markup={"inline_keyboard": [[
+                {"text": "Подтвердить", "callback_data": f"{notice.pk.hex}:confirm_payment"},
+                {"text": "Исправить", "callback_data": f"{notice.pk.hex}:edit_payment"}]]})
+        notice.draft_comment = comment
+        notice.payment_step = "confirm"
+        notice.save(update_fields=("draft_comment", "payment_step"))
+        clear_payment_messages(api, message)
+        return None
+    order.expenses = expenses
+    order.work_comment = comment
+    order.save(update_fields=("expenses", "work_comment"))
     transition_order(order.pk, "complete", actor=notice.employee)
     if amount > 0:
         order.amount = amount
@@ -369,6 +484,7 @@ def apply_amount_message(message):
     record_event(order, notice.employee, f"Telegram: получено {amount} KZT" + ("; способ оплаты не указан" if amount else "; без оплаты"))
     notice.active = False
     notice.save(update_fields=("active",))
+    clear_payment_messages(api, message)
     return f"Заказ № {order.pk}: " + (f"оплачен, {amount} KZT. Перенесён в историю." if amount else "работа завершена, ожидает оплаты.")
 
 

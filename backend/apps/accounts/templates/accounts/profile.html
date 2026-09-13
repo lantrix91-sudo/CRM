@@ -1,0 +1,14 @@
+{% extends "accounts/base.html" %}
+{% block content %}
+<h1>Личный кабинет</h1>
+<div class="card"><h2>{{ user.get_full_name|default:user.username }}</h2>
+<p>Логин: {{ user.username }}</p>
+<p>Роль: {% if user.is_superuser %}Руководитель{% else %}{{ user.get_role_display }}{% endif %}</p>
+<h2>Мой процент</h2>
+{% if user.percentage != None %}<p><strong>{{ user.percentage }} %</strong></p>{% else %}<p>Процент ещё не установлен.</p>{% endif %}
+<p>Процент устанавливает руководитель.</p>
+</div>
+{% if user.role == 'manager' or user.is_superuser %}<a href="{% url 'employees' %}">Установить проценты сотрудникам</a>{% elif user.role == 'worker' %}<a href="{% url 'worker-home' %}">Мои заказы</a>{% elif user.role == 'operator' %}<a href="{% url 'operator-home' %}">Клиенты и заказы</a>{% endif %}
+{% if show_earnings %}<div class="card"><h2>Начисления</h2><p>Оплаченные заказы: {{ paid_total }} KZT</p><p>Расходы: {{ expenses_total }} KZT · После расходов: {{ net_total }} KZT</p><p>Расчётная доля: {% if earnings != None %}<strong>{{ earnings }} KZT</strong>{% else %}процент не установлен{% endif %}</p><p>Расчёт за всё время. Для мастера используется процент, сохранённый при оплате; доля руководителя — остаток после расходов и доли мастера. Если процент заказа не сохранён, расчёт недоступен. Формула куратора пока прежняя. Бесплатные повторки не учитываются. Это расчёт начисления, а не отметка о выплате.</p></div>
+<h2>Заказы</h2>{% for order in orders %}<div class="card"><a href="{% url 'order-detail' order.pk %}">Заказ № {{ order.pk }}</a><p>{{ order.service.name }} · {{ order.employee.get_full_name|default:order.employee.username }}</p><p>{{ order.get_status_display }}{% if order.amount != None %} · {{ order.amount }} KZT{% endif %}</p></div>{% empty %}<p>Заказов пока нет.</p>{% endfor %}{% endif %}
+{% endblock %}

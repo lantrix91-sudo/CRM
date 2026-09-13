@@ -237,3 +237,19 @@ class WorkflowBoardTests(TestCase):
         lead = Lead.objects.create(title="Other", client=other)
         cards = {card["key"]: card for card in self.api.get("/api/leads/board/").data["leads"]}
         self.assertEqual(cards[f"lead-{lead.pk}"]["client_previous_count"], 0)
+
+    def test_completed_repeat_is_shown_as_paid_without_new_payment(self):
+        original = Order.objects.create(title="Original", client=self.customer, service=self.service,
+                                        employee=self.worker, status="paid", amount=20000)
+        repeated = Order.objects.create(title="Repeat", client=self.customer, service=self.service,
+                                        employee=self.worker, repeat_of=original, status="completed")
+        regular = Order.objects.create(title="Regular", client=self.customer, service=self.service,
+                                       employee=self.worker, status="completed")
+        cards = {c["key"]: c for c in self.api.get("/api/leads/board/").data["leads"]}
+        self.assertEqual(cards[f"order-{repeated.pk}"]["status"], "paid")
+        self.assertEqual(cards[f"order-{repeated.pk}"]["detail"], "Повторка выполнена · оплачено в исходном заказе")
+        self.assertEqual(cards[f"order-{regular.pk}"]["status"], "completed")
+        repeated.refresh_from_db()
+        self.assertIsNone(repeated.amount)
+        self.assertIsNone(repeated.received_amount)
+        self.assertIsNone(repeated.paid_at)

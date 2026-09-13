@@ -47,11 +47,12 @@ def transition_order(pk, action, actor=None):
     if action == "pay":
         if order.amount is None or order.amount <= 0:
             raise ValidationError("Перед отметкой оплаты укажите положительную стоимость.")
+        order.worker_percentage = order.employee.percentage if order.employee else None
         order.paid_at = timezone.now()
     if action == "complete":
         order.completed_at = timezone.now()
     order.status = transitions[action][1]
-    order.save(update_fields=("status", "paid_at", "completed_at"))
+    order.save(update_fields=("status", "paid_at", "completed_at", "worker_percentage"))
     record_event(order, actor, {"start": "Мастер принял заказ и приступил", "complete": "Мастер подтвердил завершение", "pay": "Подтверждена оплата"}[action])
     return order
 
@@ -163,3 +164,13 @@ def repeat_repair(pk, actor):
     record_event(original, actor, f"Создан повторный ремонт: заказ № {repeated.pk}")
     record_event(repeated, actor, f"Повторный ремонт заказа № {original.pk}; назначен мастер: {worker}")
     return repeated
+
+
+def payment_split(order):
+    from decimal import Decimal, ROUND_HALF_UP
+    net = (order.amount or Decimal("0")) - order.expenses
+    percentage = order.worker_percentage
+    if percentage is None:
+        return net, None, None
+    worker_amount = (net * percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return net, worker_amount, net - worker_amount

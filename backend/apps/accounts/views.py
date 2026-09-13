@@ -16,9 +16,9 @@ from apps.orders.services import convert_lead, transition_order, record_event
 @login_required
 def home(request):
     role = role_of(request.user)
-    if role not in ("manager", "operator", "worker"):
+    if role not in ("manager", "operator", "worker", "curator"):
         return render(request, "accounts/unassigned.html", status=403)
-    return redirect({"manager": "manager-home", "operator": "operator-home", "worker": "worker-home"}[role])
+    return redirect({"manager": "manager-home", "operator": "operator-home", "worker": "worker-home", "curator": "profile"}[role])
 
 @roles_required("manager")
 def manager_home(request):
@@ -44,12 +44,16 @@ def worker_home(request):
         "orders": Order.objects.filter(employee=request.user).exclude(status__in=("paid", "cancelled")).select_related("client", "service").order_by("-created_at")[:100],
     })
 
-@roles_required("manager", "operator", "worker")
+@roles_required("manager", "operator", "worker", "curator")
 def order_detail(request, pk):
     with transaction.atomic():
         queryset = Order.objects.all()
         if role_of(request.user) == "worker":
             queryset = queryset.filter(employee=request.user)
+        if role_of(request.user) == "curator":
+            queryset = queryset.filter(employee__curator=request.user)
+            if request.method != "GET":
+                raise PermissionDenied
         order = get_object_or_404(queryset.select_for_update(), pk=pk)
         form = None
         payment_form = ReceivedPaymentForm(request.POST if request.method == "POST" and request.POST.get("action") == "received_payment" else None)
@@ -123,7 +127,9 @@ def order_detail(request, pk):
                     raise PermissionDenied
             except ValidationError as error:
                 messages.error(request, "; ".join(error.messages))
-        return render(request, "accounts/order.html", {"order": order, "form": form, "payment_form": payment_form})
+        from apps.orders.services import payment_split
+        net, worker_amount, manager_amount = payment_split(order)
+        return render(request, "accounts/order.html", {"order": order, "form": form, "payment_form": payment_form, "payment_net": net, "payment_worker": worker_amount, "payment_manager": manager_amount})
 
 @roles_required("manager", "operator")
 def edit_record(request, kind, pk=None):
@@ -243,3 +249,72 @@ def worker_history(request):
     from django.core.paginator import Paginator
     orders = Order.objects.filter(employee=request.user, status__in=("paid", "cancelled")).select_related("client", "service").order_by("-paid_at", "-pk")
     return render(request, "accounts/worker_history.html", {"page_obj": Paginator(orders, 20).get_page(request.GET.get("page"))})
+
+
+@roles_required("manager", "operator", "worker", "curator")
+def profile(request):
+    if request.method != "GET":
+        from django.http import HttpResponseNotAllowed
+        return HttpResponseNotAllowed(["GET"])
+    from decimal import Decimal, ROUND_HALF_UP
+    role = role_of(request.user)
+    orders = Order.objects.none()
+    if role == "worker":
+        orders = Order.objects.filter(employee=request.user)
+    elif role == "curator":
+        orders = Order.objects.filter(employee__curator=request.user)
+    elif role == "manager":
+        orders = Order.objects.all()
+    paid = orders.filter(status="paid", repeat_of__isnull=True)
+    total = paid.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    earnings = None if request.user.percentage is None else (total * request.user.percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    expenses_total = paid.aggregate(total=Sum("expenses"))["total"] or Decimal("0")
+    if role in ("worker", "manager"):
+        from apps.orders.services import payment_split
+        earnings = Decimal("0")
+        for order in paid.select_related("employee"):
+            net, worker_amount, manager_amount = payment_split(order)
+            if worker_amount is None:
+                earnings = None
+                break
+            earnings += worker_amount if role == "worker" else manager_amount
+    return render(request, "accounts/profile.html", {
+        "orders": orders.select_related("client", "service", "employee").order_by("-created_at")[:100],
+        "show_earnings": role in ("worker", "curator", "manager"), "paid_total": total, "earnings": earnings, "expenses_total": expenses_total, "net_total": total - expenses_total,
+    })
+
+
+@roles_required("manager", "worker")
+def settlements(request, pk=None):
+    import uuid
+    from django import forms
+    from apps.orders.settlements import totals, settle
+    is_manager = allowed(request.user, "manager")
+    if not is_manager:
+        if pk is not None and pk != request.user.pk:
+            raise PermissionDenied
+        pk = request.user.pk
+    workers = User.objects.filter(role="worker").order_by("username")
+    worker = get_object_or_404(workers, pk=pk) if pk else None
+    class TransferForm(forms.Form):
+        amount = forms.DecimalField(label="Получено от мастера (KZT)", max_digits=14, decimal_places=2, min_value=0.01)
+        comment = forms.CharField(label="Комментарий", max_length=300, required=False)
+        request_id = forms.UUIDField(widget=forms.HiddenInput)
+    form = TransferForm(request.POST if request.method == "POST" and request.POST.get("action") == "transfer" else None,
+                        initial={"request_id": uuid.uuid4()})
+    if request.method == "POST":
+        if not is_manager or worker is None:
+            raise PermissionDenied
+        action = request.POST.get("action")
+        try:
+            if action == "close":
+                settle(worker.pk, request.user, action)
+            elif action == "transfer" and form.is_valid():
+                settle(worker.pk, request.user, action, **form.cleaned_data)
+            else:
+                return render(request, "accounts/settlements.html", {"worker": worker, "workers": workers, "summary": totals(worker), "form": form, "can_manage": is_manager})
+            return redirect("worker-settlement", pk=worker.pk)
+        except ValidationError as error:
+            messages.error(request, "; ".join(error.messages))
+    return render(request, "accounts/settlements.html", {"worker": worker, "workers": workers,
+                  "summary": totals(worker) if worker else None, "form": form, "can_manage": is_manager})

@@ -43,7 +43,7 @@ function App() {
     [card.client_name, card.phone, card.title, card.service_name, card.employee_name ?? ""].some(value => value.toLowerCase().includes(search))
     || (phoneQuery.length > 0 && phoneDigits(card.phone).includes(phoneQuery))
   ) ?? [];
-  return <><header className="topbar"><a className="brand" href="/"><span className="logo">C</span> CRM</a><nav><a href="/operator/">Обращения и заказы</a><a href="/calls/">Звонки</a><a href="/">Моя страница</a></nav></header>
+  return <><header className="topbar"><a className="brand" href="/"><span className="logo">C</span> CRM</a><nav><a href="/operator/">Обращения и заказы</a><a href="/calls/">Звонки</a><a href="/profile/">Личный кабинет</a></nav></header>
     <main><div className="page-title"><div><p className="eyebrow">КЛИЕНТЫ И ЗАКАЗЫ</p><h1>Доска работы</h1><p className="subtitle">От обращения до оплаты — вся работа на одной доске.</p></div>{board?.can_add && <a className="button primary" href="/workspace/lead/new/">+ Новый лид</a>}</div>
     <div className="toolbar"><label className="search">Поиск по доске<input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Клиент, телефон, услуга или мастер" /></label><span>{cards.length} карточек</span><button className="button secondary" disabled={busy} onClick={() => void reload()}>Обновить</button></div>
     <p className="feedback" aria-live="polite">{busy ? "Обновляем…" : "Статусы меняются по действиям: согласие клиента → назначение мастера → завершение → оплата. Автообновление каждые 15 секунд."}</p>

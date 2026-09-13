@@ -74,7 +74,14 @@ class EmployeeForm(forms.ModelForm):
     password = forms.CharField(label="Пароль (для нового сотрудника обязателен)", widget=forms.PasswordInput, required=False)
     class Meta:
         model = User
-        fields = ("username", "first_name", "last_name", "role", "is_active", "services", "is_available", "max_active_leads", "telegram_chat_id")
+        fields = ("username", "first_name", "last_name", "role", "percentage", "curator", "is_active", "services", "is_available", "max_active_leads", "telegram_chat_id")
+
+    def clean(self):
+        data = super().clean()
+        for field in ("curator",):
+            if data.get(field) and data.get("role") != "worker":
+                self.add_error(field, "Закрепление доступно только для мастера.")
+        return data
 
     def clean_password(self):
         password = self.cleaned_data.get("password")
