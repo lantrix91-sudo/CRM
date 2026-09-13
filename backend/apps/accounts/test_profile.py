@@ -149,9 +149,43 @@ class ProfileTests(TestCase):
         self.assertEqual(summary["company_amount"], Decimal("7300"))
 
         selected = self.client.get(f"/profile/?worker={other.pk}").context["dashboard"]["today"]
-        self.assertEqual(selected["order_count"], 1)
-        self.assertEqual(selected["worker_amount"], Decimal("2500"))
-        self.assertEqual(selected["company_amount"], Decimal("2500"))
+        self.assertEqual(selected["order_count"], 2)
+        self.assertEqual(selected["worker_amount"], Decimal("5700"))
+        self.assertEqual(selected["company_amount"], Decimal("7300"))
+
+    def test_manager_can_filter_profile_orders_without_changing_worker_scope(self):
+        manager = User.objects.create_user(username="orders_manager", role="manager")
+        other = User.objects.create_user(username="filtered_worker", role="worker", percentage=50)
+        client = Client.objects.create(name="Filter client", phone="111")
+        service = Service.objects.create(name="Filter service")
+        own_order = Order.objects.create(
+            title="Worker order", client=client, service=service,
+            employee=self.worker, status="paid", amount=1000, worker_percentage=50,
+        )
+        other_order = Order.objects.create(
+            title="Other worker order", client=client, service=service,
+            employee=other, status="paid", amount=2000, worker_percentage=50,
+        )
+
+        self.client.force_login(manager)
+        response = self.client.get("/profile/")
+        self.assertEqual(list(response.context["orders"]), [other_order, own_order])
+        self.assertContains(response, "Все сотрудники")
+        self.assertContains(response, "filtered_worker")
+
+        response = self.client.get(f"/profile/?worker={other.pk}")
+        self.assertEqual([order.pk for order in response.context["orders"]], [other_order.pk])
+        self.assertEqual(response.context["selected_worker"], other)
+        self.assertContains(response, 'option value="{}"'.format(other.pk))
+
+        invalid = self.client.get("/profile/?worker=not-a-worker")
+        self.assertEqual([order.pk for order in invalid.context["orders"]], [other_order.pk, own_order.pk])
+
+        self.client.force_login(self.worker)
+        response = self.client.get(f"/profile/?worker={other.pk}")
+        self.assertEqual([order.pk for order in response.context["orders"]], [own_order.pk])
+        self.assertNotContains(response, other_order.title)
+        self.assertIsNone(response.context["workers"])
 
     def test_percentage_validation(self):
         for value in ("-1", "100.01"):

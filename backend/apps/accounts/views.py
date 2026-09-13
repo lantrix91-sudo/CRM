@@ -261,18 +261,24 @@ def profile(request):
     from django.utils import timezone
     role = role_of(request.user)
     orders = Order.objects.none()
+    dashboard_orders = Order.objects.none()
+    workers = User.objects.filter(role="worker").order_by("first_name", "last_name", "username")
+    selected_worker = None
     if role == "worker":
         orders = Order.objects.filter(employee=request.user)
+        dashboard_orders = orders
     elif role == "curator":
         orders = Order.objects.filter(employee__curator=request.user)
+        dashboard_orders = orders
     elif role == "manager":
-        selected_worker = request.GET.get("worker")
-        if selected_worker:
-            orders = Order.objects.filter(employee_id=selected_worker, employee__role="worker")
-        else:
-            orders = Order.objects.filter(employee__role="worker")
+        dashboard_orders = Order.objects.filter(employee__role="worker")
+        selected_worker_id = request.GET.get("worker")
+        if selected_worker_id and selected_worker_id.isdigit():
+            selected_worker = workers.filter(pk=int(selected_worker_id)).first()
+        orders = dashboard_orders.filter(employee=selected_worker) if selected_worker else dashboard_orders
     orders = orders.select_related("client", "service", "employee").order_by("-created_at")
-    paid = orders.filter(status="paid", repeat_of__isnull=True)
+    dashboard_orders = dashboard_orders.select_related("client", "service", "employee").order_by("-created_at")
+    paid = dashboard_orders.filter(status="paid", repeat_of__isnull=True)
     total = paid.aggregate(total=Sum("amount"))["total"] or Decimal("0")
     earnings = None if request.user.percentage is None else (total * request.user.percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     expenses_total = paid.aggregate(total=Sum("expenses"))["total"] or Decimal("0")
@@ -286,7 +292,7 @@ def profile(request):
                 break
             earnings += worker_amount if role == "worker" else manager_amount
     day_start, day_end = local_day_bounds(timezone.localdate())
-    today_orders = orders.filter(
+    today_orders = dashboard_orders.filter(
         status="paid", repeat_of__isnull=True,
         paid_at__gte=day_start, paid_at__lt=day_end,
     )
@@ -305,6 +311,8 @@ def profile(request):
             order.financial_breakdown = order_breakdown(order)
     return render(request, "accounts/profile.html", {
         "orders": orders,
+        "workers": workers if role == "manager" else None,
+        "selected_worker": selected_worker,
         "show_earnings": role in ("worker", "curator", "manager"), "paid_total": total,
         "earnings": earnings, "expenses_total": expenses_total, "net_total": total - expenses_total,
         "dashboard": dashboard,
