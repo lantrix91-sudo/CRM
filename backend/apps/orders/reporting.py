@@ -134,6 +134,11 @@ def export_rows(worker, date_from=None, date_to=None):
         transfers = transfers.filter(created_at__gte=start)
     if end:
         transfers = transfers.filter(created_at__lt=end)
+    # Missing historical percentages make both opening and closing balances unknown.
+    incomplete = paid_orders(worker, end=end, legacy_fallback=True).filter(worker_percentage__isnull=True)
+    if incomplete.exists():
+        from django.core.exceptions import ValidationError
+        raise ValidationError("Невозможно сформировать точный отчёт: есть оплаченные заказы без сохранённого процента мастера.")
     opening_balance = export_opening_balance(worker, start)
     rows = []
     if opening_balance:

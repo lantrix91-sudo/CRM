@@ -173,6 +173,8 @@ class OrderWorkflowTests(TestCase):
         self.assertEqual(edit.kwargs["message_id"], 44)
         self.assertTrue(edit.kwargs["text"].startswith("✅ Выполнено\n"))
         self.assertIn(f"Заказ № {order.pk}", edit.kwargs["text"])
+        self.assertIn("завершён бесплатно. Оплата не требуется.", api.call.call_args.kwargs["text"])
+        self.assertNotIn("ожидает оплаты", api.call.call_args.kwargs["text"])
         self.assertEqual(edit.kwargs["reply_markup"], {"inline_keyboard": []})
         self.assertEqual(api.call.call_args.args[0], "sendMessage")
         order.refresh_from_db()

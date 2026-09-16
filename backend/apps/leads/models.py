@@ -22,6 +22,9 @@ class Lead(models.Model):
         "статус", max_length=20, choices=Status.choices,
         default=Status.NEW, db_index=True,
     )
+    appliance_type = models.CharField("тип техники", max_length=100, blank=True)
+    brand = models.CharField("бренд", max_length=100, blank=True)
+    comment = models.TextField("комментарий", max_length=1000, blank=True)
     title = models.CharField("название", max_length=200)
     client = models.ForeignKey(
         "customers.Client", verbose_name="клиент",

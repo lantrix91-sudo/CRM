@@ -84,9 +84,9 @@ class BoardAPI(APIView):
                 "employee_name": (order.employee.get_full_name() or order.employee.username) if order.employee else None,
                 "source": order.lead.source if order.lead else "", "status": {"new": "in_progress", "assigned": "assigned", "in_progress": "assigned", "completed": "completed", "paid": "paid", "cancelled": "lost"}[order.status],
                 "detail": {"new": "Клиент согласился · нужен мастер", "assigned": "Ожидает принятия мастером", "in_progress": "Мастер приступил", "completed": f"Мастер получил {order.received_amount} KZT · проверьте оплату" if order.received_at else "Работа завершена · ожидает оплаты", "paid": "Оплата подтверждена", "cancelled": f"Клиент отказался: {order.cancellation_reason}"}[order.status]})
-            if order.repeat_of_id and order.status == Order.Status.COMPLETED:
+            if order.completed_free:
                 cards[-1]["status"] = "paid"
-                cards[-1]["detail"] = "Повторка выполнена · оплачено в исходном заказе"
+                cards[-1]["detail"] = "Повторка выполнена · оплачено в исходном заказе" if order.repeat_of_id else "Выполнен бесплатно · оплата не требуется"
             client_history.append((order.lead.created_at if order.lead else order.created_at,
                                    f"order-{order.pk}", order.client_id, order.client.phone))
         from apps.customers.phones import normalize_phone

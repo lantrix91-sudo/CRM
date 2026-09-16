@@ -70,6 +70,8 @@ def notification_text(lead, accepted=False, completed=False):
     lines = ["✅ Выполнено" if completed else "Заказ принят" if accepted else "🔔 Новый заказ", service_name]
     if getattr(lead, "repeat_of_id", None):
         lines.append(f"❤️ Повторка · бесплатно · исходный заказ № {lead.repeat_of_id}")
+    if lead.client.name:
+        lines.append(f"Имя: {lead.client.name}")
     if lead.client.address:
         lines.append(f"Адрес: {lead.client.address}")
     if accepted:
@@ -484,7 +486,7 @@ def apply_amount_message(message, api=None, confirmed=False):
     notice.active = False
     notice.save(update_fields=("active",))
     clear_payment_messages(api, message)
-    return f"Заказ № {order.pk}: " + (f"оплачен, {amount} KZT. Перенесён в историю." if amount else "работа завершена, ожидает оплаты.")
+    return f"Заказ № {order.pk}: " + (f"оплачен, {amount} KZT. Перенесён в историю." if amount else "завершён бесплатно. Оплата не требуется. Перенесён в историю.")
 
 
 def log_api_error(method, code, payload):

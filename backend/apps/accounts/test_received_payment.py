@@ -119,7 +119,7 @@ class ReceivedPaymentTests(TestCase):
         self.assertEqual(response.status_code, 302)
         repeat.refresh_from_db()
         self.assertEqual(repeat.status, "completed")
-        self.assertIsNone(repeat.amount)
+        self.assertEqual(repeat.amount, 0)
         self.assertIsNone(repeat.received_amount)
         self.assertIsNone(repeat.paid_at)
         self.assertContains(self.client.get(repeat_url), "Выполнен · бесплатно")

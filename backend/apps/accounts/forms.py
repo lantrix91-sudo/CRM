@@ -19,8 +19,8 @@ class ClientForm(forms.ModelForm):
 
 class LeadForm(forms.ModelForm):
     client_name = forms.CharField(label="Имя", max_length=200)
-    client_phone = forms.CharField(label="Номер WhatsApp", max_length=32)
-    client_address = forms.CharField(label="Адрес", max_length=300, required=False)
+    client_phone = forms.CharField(label="Номер телефона", max_length=32)
+    client_address = forms.CharField(label="Адрес, квартира", max_length=300, required=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -54,8 +54,8 @@ class LeadForm(forms.ModelForm):
 
     class Meta:
         model = Lead
-        fields = ("client_name", "client_phone", "client_address", "service", "source")
-        widgets = {"source": forms.Select(choices=[("", "Не указан")] + [(s, s) for s in ("OLX", "Google", "Instagram", "Telegram", "Телефон")])}
+        fields = ("client_name", "client_address", "client_phone", "service", "appliance_type", "brand", "comment", "source")
+        widgets = {"comment": forms.Textarea(attrs={"rows": 3}), "source": forms.Select(choices=[("", "Не указан")] + [(s, s) for s in ("OLX", "Google", "Instagram", "Telegram", "Телефон")])}
 
 class OrderForm(forms.ModelForm):
     class Meta:
@@ -65,9 +65,11 @@ class OrderForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["employee"].queryset = User.objects.filter(role="worker", is_active=True)
-        if self.instance.pk and self.instance.status not in ("new", "assigned"):
+        if self.instance.pk and (self.instance.status != "new" or self.instance.employee_id):
             self.fields["employee"].disabled = True
-        if self.instance.status == "paid":
+            self.fields["service"].disabled = True
+            self.fields["employee"].help_text = "Для смены мастера верните заказ оператору на канбане."
+        if self.instance.status == "paid" or self.instance.is_free or self.instance.repeat_of_id:
             self.fields["amount"].disabled = True
 
 class EmployeeForm(forms.ModelForm):

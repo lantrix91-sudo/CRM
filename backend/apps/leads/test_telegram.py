@@ -39,7 +39,7 @@ class TelegramTests(TestCase):
         self.assertEqual(kwargs["chat_id"], 12345)
         for text in ("Repair",):
             self.assertIn(text, kwargs["text"])
-        self.assertNotIn("Ivan", kwargs["text"])
+        self.assertIn("Ivan", kwargs["text"])
         self.assertNotIn("+77000000000", kwargs["text"])
         self.assertEqual(len(kwargs["reply_markup"]["inline_keyboard"][0]), 2)
 

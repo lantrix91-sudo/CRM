@@ -23,8 +23,13 @@ def home(request):
 
 @roles_required("manager")
 def manager_home(request):
+    stages = [
+        {"label": Order.Status(row["status"]).label, "total": row["total"]}
+        for row in Order.objects.exclude(Q(status="completed") & (Q(repeat_of__isnull=False) | Q(is_free=True)))
+        .values("status").annotate(total=Count("pk")).order_by("status")
+    ]
     return render(request, "accounts/manager.html", {
-        "stages": [{"label": Order.Status(row["status"]).label, "total": row["total"]} for row in Order.objects.values("status").annotate(total=Count("pk"))],
+        "stages": stages,
         "workers": User.objects.filter(role="worker").annotate(active_orders=Count("orders", filter=Q(orders__status__in=("new", "assigned", "in_progress")), distinct=True), active_leads=Count("leads", filter=Q(leads__status__in=("new", "assigned", "in_progress")), distinct=True)).order_by("username"),
         "paid": Order.objects.filter(status="paid").aggregate(total=Sum("amount"))["total"] or 0,
         "leads_count": Lead.objects.count(),
@@ -42,7 +47,7 @@ def operator_home(request):
 def worker_home(request):
     return render(request, "accounts/worker.html", {
         "assigned_leads": Lead.objects.filter(employee=request.user, order__isnull=True, status__in=("new", "assigned", "in_progress")).select_related("client", "service").order_by("-created_at")[:100],
-        "orders": Order.objects.filter(employee=request.user).exclude(status__in=("paid", "cancelled")).select_related("client", "service").order_by("-created_at")[:100],
+        "orders": Order.objects.filter(employee=request.user).exclude(status__in=("paid", "cancelled")).exclude(Q(status="completed") & (Q(is_free=True) | Q(repeat_of__isnull=False))).select_related("client", "service").order_by("-created_at")[:100],
     })
 
 @roles_required("manager", "operator", "worker", "curator")
@@ -87,20 +92,20 @@ def order_detail(request, pk):
                         raise PermissionDenied
                     previous_employee = order.employee_id
                     if form.is_valid():
-                        order = form.save(commit=False)
-                        if order.status in ("new", "assigned"):
-                            order.status = "assigned" if order.employee_id else "new"
-                        order.save()
-                        if previous_employee != order.employee_id:
-                            record_event(order, request.user, f"Изменён мастер: {order.employee or 'не назначен'}")
-                            TelegramNotice.objects.filter(order=order, active=True).update(active=False)
-                            if order.employee_id:
-                                TelegramNotice.objects.create(order=order, employee=order.employee)
+                        # A savepoint rolls back field edits if assignment validation fails.
+                        with transaction.atomic():
+                            order = form.save(commit=False)
+                            employee_id = order.employee_id
+                            order.employee_id = previous_employee
+                            order.save()
+                            if employee_id != previous_employee:
+                                from apps.orders.services import assign_order
+                                order = assign_order(pk, employee_id, request.user)
                         return redirect("order-detail", pk=pk)
                 elif action == "received_payment":
                     if role_of(request.user) != "worker" or order.employee_id != request.user.pk:
                         raise PermissionDenied
-                    if order.repeat_of_id:
+                    if order.repeat_of_id or order.is_free:
                         raise ValidationError("Повторный ремонт выполняется бесплатно и не требует оплаты.")
                     if order.status != "completed":
                         raise ValidationError("Сообщить об оплате можно после завершения работы.")
@@ -330,7 +335,7 @@ def assigned_lead_detail(request, pk):
 @roles_required("worker")
 def worker_history(request):
     from django.core.paginator import Paginator
-    orders = Order.objects.filter(employee=request.user, status__in=("paid", "cancelled")).select_related("client", "service").order_by("-paid_at", "-pk")
+    orders = Order.objects.filter(Q(status__in=("paid", "cancelled")) | (Q(status="completed") & (Q(is_free=True) | Q(repeat_of__isnull=False))), employee=request.user).select_related("client", "service").order_by("-paid_at", "-pk")
     return render(request, "accounts/worker_history.html", {"page_obj": Paginator(orders, 20).get_page(request.GET.get("page"))})
 
 
@@ -388,7 +393,15 @@ def profile(request):
         dashboard = None
     if dashboard:
         dashboard["date"] = timezone.localdate()
-    orders = list(orders[:100])
+    history = request.GET.get("history", "")
+    history_title = {"today": "История за сегодня", "earnings": "История начислений"}.get(history, "Мои заказы")
+    if history in ("today", "earnings"):
+        orders = today_orders if history == "today" else paid
+        if selected_worker:
+            orders = orders.filter(employee=selected_worker)
+    from django.core.paginator import Paginator
+    page_obj = Paginator(orders, 20).get_page(request.GET.get("page"))
+    orders = list(page_obj.object_list)
     for order in orders:
         if order.status == "paid":
             order.financial_breakdown = order_breakdown(order)
@@ -396,6 +409,7 @@ def profile(request):
         "orders": orders,
         "workers": workers if role == "manager" else None,
         "selected_worker": selected_worker,
+        "history": history, "history_title": history_title, "page_obj": page_obj,
         "show_earnings": role in ("worker", "curator", "manager"), "paid_total": total,
         "earnings": earnings, "expenses_total": expenses_total, "net_total": total - expenses_total,
         "dashboard": dashboard,
@@ -417,12 +431,16 @@ def settlement_shift_detail(request, pk):
 def settlement_export(request, pk=None):
     import openpyxl
     from decimal import Decimal
-    from django.http import HttpResponse
+    from django.http import HttpResponse, HttpResponseBadRequest
+    from django.utils import timezone
     from apps.orders.reporting import export_rows, parse_export_date
 
     is_manager = allowed(request.user, "manager")
     if is_manager:
-        worker = get_object_or_404(User, pk=pk, role="worker") if pk else get_object_or_404(User, pk=request.GET.get("worker"), role="worker")
+        worker_id = str(pk or request.GET.get("worker", ""))
+        if len(worker_id) > 19 or not worker_id.isascii() or not worker_id.isdigit() or not 0 < int(worker_id) <= 9223372036854775807:
+            return HttpResponseBadRequest("Выберите мастера.")
+        worker = get_object_or_404(User, pk=int(worker_id), role="worker")
     else:
         if pk and pk != request.user.pk:
             raise PermissionDenied
@@ -430,10 +448,15 @@ def settlement_export(request, pk=None):
     date_from = parse_export_date(request.GET.get("date_from"))
     date_to = parse_export_date(request.GET.get("date_to"))
     if request.GET.get("date_from") and date_from is None or request.GET.get("date_to") and date_to is None:
-        raise ValidationError("Дата должна быть указана в формате ГГГГ-ММ-ДД.")
+        return HttpResponseBadRequest("Дата должна быть указана в формате ГГГГ-ММ-ДД.")
     if date_from and date_to and date_from > date_to:
-        raise ValidationError("Дата начала не может быть позже даты окончания.")
-    rows = export_rows(worker, date_from, date_to)
+        return HttpResponseBadRequest("Дата начала не может быть позже даты окончания.")
+    try:
+        rows = export_rows(worker, date_from, date_to)
+    except ValidationError as error:
+        return HttpResponseBadRequest("; ".join(error.messages))
+    except OverflowError:
+        return HttpResponseBadRequest("Выберите дату окончания раньше 9999-12-31.")
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.title = "Финансы"
@@ -441,11 +464,13 @@ def settlement_export(request, pk=None):
     sheet.append(headers)
     for row in rows:
         sheet.append([
-            row["date"].strftime("%Y-%m-%d %H:%M") if row["date"] else "",
+            timezone.localtime(row["date"]).strftime("%Y-%m-%d %H:%M") if row["date"] else "",
             row["order_number"], row["operation"], row["service_amount"], row["expenses"],
             row["net_amount"], row["worker_percentage"], row["worker_amount"],
             row["company_amount"], row["transfer_amount"], row["remaining_balance"], row["comment"],
         ])
+        # Preserve user comments as text even when they begin with '='.
+        sheet.cell(sheet.max_row, 12).data_type = "s"
     totals_row = len(rows) + 3
     sheet.cell(totals_row, 1, "Итого по операциям")
     for column, key in ((4, "service_amount"), (5, "expenses"), (6, "net_amount"), (8, "worker_amount"), (9, "company_amount"), (10, "transfer_amount")):

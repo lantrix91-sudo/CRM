@@ -21,6 +21,7 @@ def convert_lead(pk, actor=None):
     employee = lead.employee if lead.employee_id and lead.employee.is_active and lead.employee.role == "worker" else None
     order = Order.objects.create(
         lead=lead, title=lead.title, client=lead.client, service=lead.service,
+        appliance_type=lead.appliance_type, brand=lead.brand, comment=lead.comment,
         employee=employee, status=Order.Status.ASSIGNED if employee else Order.Status.NEW,
     )
     lead.status = Lead.Status.CONVERTED
@@ -47,6 +48,8 @@ def transition_order(pk, action, actor=None):
     if action in ("start", "complete") and not order.employee_id:
         raise ValidationError("Сначала назначьте мастера.")
     if action == "pay":
+        if order.repeat_of_id or order.is_free:
+            raise ValidationError("Повторный ремонт выполняется бесплатно и не требует оплаты.")
         if order.amount is None or order.amount <= 0:
             raise ValidationError("Перед отметкой оплаты укажите положительную стоимость.")
         order.worker_percentage = order.employee.percentage if order.employee else None
@@ -74,9 +77,11 @@ def complete_order_with_payment(pk, amount, expenses, comment, actor=None, compl
     if not isinstance(comment, str) or not comment.strip() or len(comment.strip()) > 2000:
         raise ValidationError("Укажите, что было сделано (до 2000 символов).")
 
+    order.is_free = amount == 0
+    order.amount = amount
     order.expenses = expenses
     order.work_comment = comment.strip()
-    order.save(update_fields=("expenses", "work_comment"))
+    order.save(update_fields=("is_free", "amount", "expenses", "work_comment"))
     transition_order(order.pk, "complete", actor=actor)
     if amount > 0:
         order.amount = amount
@@ -193,6 +198,7 @@ def repeat_repair(pk, actor):
     repeated = Order.objects.create(
         repeat_of=original, title=f"Повторный ремонт заказа № {original.pk}",
         client=original.client, service=original.service, employee=worker, status=Order.Status.IN_PROGRESS,
+        appliance_type=original.appliance_type, brand=original.brand, comment=original.comment,
     )
     TelegramNotice.objects.create(order=repeated, employee=worker)
     record_event(original, actor, f"Создан повторный ремонт: заказ № {repeated.pk}")

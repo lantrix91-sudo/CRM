@@ -60,3 +60,22 @@ class LeadClientTests(TestCase):
         self.assertEqual(saved.title, "Original title")
         self.assertEqual(saved.client_id, client.pk)
         self.assertEqual(Client.objects.count(), 1)
+
+
+    def test_appliance_details_saved_and_copied_to_order(self):
+        from apps.orders.services import convert_lead
+        details = {"appliance_type": "Washing machine", "brand": "LG", "comment": "Water leak"}
+        form = LeadForm({**self.data, **details})
+        self.assertTrue(form.is_valid(), form.errors)
+        lead = form.save()
+        lead.refresh_from_db()
+        order, created = convert_lead(lead.pk)
+        self.assertTrue(created)
+        for field, value in details.items():
+            self.assertEqual(getattr(lead, field), value)
+            self.assertEqual(getattr(order, field), value)
+        edited = LeadForm({**self.data, **details, "comment": "Updated"}, instance=lead)
+        self.assertTrue(edited.is_valid(), edited.errors)
+        edited.save()
+        order.refresh_from_db()
+        self.assertEqual(order.comment, "Water leak")

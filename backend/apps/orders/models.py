@@ -20,6 +20,7 @@ class Order(models.Model):
     lead = models.OneToOneField("leads.Lead", on_delete=models.PROTECT, null=True, blank=True, related_name="order", verbose_name="исходный лид")
     status = models.CharField("этап", max_length=20, choices=Status.choices, default=Status.NEW, db_index=True)
     amount = models.DecimalField("стоимость (KZT)", max_digits=12, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(0)])
+    is_free = models.BooleanField("завершён бесплатно", default=False)
     expenses = models.DecimalField("расходы (KZT)", max_digits=12, decimal_places=2, default=0, validators=[MinValueValidator(0)])
     work_comment = models.TextField("что сделано", blank=True, max_length=2000)
     worker_percentage = models.DecimalField("процент мастера при оплате", max_digits=5, decimal_places=2, null=True, blank=True)
@@ -32,6 +33,9 @@ class Order(models.Model):
     received_method = models.CharField("способ оплаты", max_length=20, blank=True, choices=(("cash", "Наличные"), ("transfer", "Перевод"), ("card", "Карта")))
     received_at = models.DateTimeField("мастер сообщил об оплате", null=True, blank=True)
 
+    appliance_type = models.CharField("тип техники", max_length=100, blank=True)
+    brand = models.CharField("бренд", max_length=100, blank=True)
+    comment = models.TextField("комментарий", max_length=1000, blank=True)
     title = models.CharField("название", max_length=200)
     client = models.ForeignKey(
         "customers.Client", verbose_name="клиент",
@@ -54,6 +58,14 @@ class Order(models.Model):
     def __str__(self):
         return self.title
 
+    @property
+    def completed_free(self):
+        return self.status == self.Status.COMPLETED and (self.is_free or bool(self.repeat_of_id))
+
+    @property
+    def display_status(self):
+        return "Выполнен · бесплатно" if self.completed_free else self.get_status_display()
+
     def clean(self):
         super().clean()
         if self.employee_id and (not self.employee.is_active or self.employee.role != "worker"):
@@ -70,7 +82,7 @@ class OrderEvent(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="events")
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
     actor_name = models.CharField(max_length=200, blank=True)
-    description = models.CharField(max_length=300)
+    description = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
