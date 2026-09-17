@@ -245,7 +245,7 @@ class WorkflowBoardTests(TestCase):
                                        employee=self.worker, status="completed")
         cards = {c["key"]: c for c in self.api.get("/api/leads/board/").data["leads"]}
         self.assertEqual(cards[f"order-{repeated.pk}"]["status"], "paid")
-        self.assertEqual(cards[f"order-{repeated.pk}"]["detail"], "Повторка выполнена · оплачено в исходном заказе")
+        self.assertEqual(cards[f"order-{repeated.pk}"]["detail"], "Выполнен · бесплатно. Оплата не требуется.")
         self.assertEqual(cards[f"order-{regular.pk}"]["status"], "completed")
         repeated.refresh_from_db()
         self.assertIsNone(repeated.amount)

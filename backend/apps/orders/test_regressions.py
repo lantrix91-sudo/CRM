@@ -210,3 +210,35 @@ class RegressionTests(TestCase):
         self.client.force_login(self.worker)
         self.assertNotContains(self.client.get("/my-orders/"), f'/orders/{self.order.pk}/')
         self.assertContains(self.client.get("/my-orders/history/"), f'/orders/{self.order.pk}/')
+
+
+    def test_completion_status_is_consistent_across_channels(self):
+        from .services import complete_order_with_payment
+        from apps.leads.telegram import notification_text
+        from .settlements import totals
+        original = self.order
+        for amount, repeat in ((Decimal("1000"), False), (Decimal("0"), False), (Decimal("0"), True)):
+            with self.subTest(amount=amount, repeat=repeat):
+                order = Order.objects.create(
+                    title="Scenario", client=original.client, service=self.service,
+                    employee=self.worker, status="in_progress",
+                    repeat_of=original if repeat else None,
+                )
+                completed = complete_order_with_payment(order.pk, amount, Decimal("0"), "Done", actor=self.worker)
+                self.assertEqual(completed.status, "paid" if amount else "completed")
+                self.assertEqual(completed.board_status, "paid")
+                label = "Оплачен" if amount else "Выполнен · бесплатно"
+                self.assertEqual(completed.display_status, label)
+                self.client.force_login(self.manager)
+                board = self.client.get("/api/leads/board/").json()
+                card = next(c for c in board["leads"] if c["key"] == f"order-{order.pk}")
+                self.assertEqual(card["detail"], completed.status_detail)
+                self.assertEqual(next(c["label"] for c in board["columns"] if c["id"] == "paid"), "Закрыт")
+                self.assertNotIn("ожидает оплаты", card["detail"])
+                self.assertIn(label, notification_text(completed, accepted=True, completed=True))
+                self.client.force_login(self.worker)
+                self.assertContains(self.client.get(f"/orders/{order.pk}/"), label)
+                self.assertContains(self.client.get("/my-orders/history/"), f"/orders/{order.pk}/")
+                self.assertNotContains(self.client.get("/my-orders/"), f"/orders/{order.pk}/")
+                included = {o.pk for o in totals(self.worker)["orders"]}
+                self.assertEqual(order.pk in included, bool(amount))

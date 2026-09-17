@@ -66,6 +66,21 @@ class Order(models.Model):
     def display_status(self):
         return "Выполнен · бесплатно" if self.completed_free else self.get_status_display()
 
+    @property
+    def board_status(self):
+        if self.completed_free:
+            return "paid"
+        return {"new": "in_progress", "assigned": "assigned", "in_progress": "assigned",
+                "completed": "completed", "paid": "paid", "cancelled": "lost"}[self.status]
+
+    @property
+    def status_detail(self):
+        if self.completed_free:
+            return f"{self.display_status}. Оплата не требуется."
+        if self.status == self.Status.CANCELLED:
+            return f"{self.display_status}. Причина: {self.cancellation_reason}"
+        return self.display_status
+
     def clean(self):
         super().clean()
         if self.employee_id and (not self.employee.is_active or self.employee.role != "worker"):

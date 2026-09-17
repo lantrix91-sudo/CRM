@@ -82,11 +82,8 @@ class BoardAPI(APIView):
                 "client_name": order.client.name, "phone": order.client.phone, "service_id": order.service_id,
                 "service_name": order.service.name, "employee_id": order.employee_id,
                 "employee_name": (order.employee.get_full_name() or order.employee.username) if order.employee else None,
-                "source": order.lead.source if order.lead else "", "status": {"new": "in_progress", "assigned": "assigned", "in_progress": "assigned", "completed": "completed", "paid": "paid", "cancelled": "lost"}[order.status],
-                "detail": {"new": "Клиент согласился · нужен мастер", "assigned": "Ожидает принятия мастером", "in_progress": "Мастер приступил", "completed": f"Мастер получил {order.received_amount} KZT · проверьте оплату" if order.received_at else "Работа завершена · ожидает оплаты", "paid": "Оплата подтверждена", "cancelled": f"Клиент отказался: {order.cancellation_reason}"}[order.status]})
-            if order.completed_free:
-                cards[-1]["status"] = "paid"
-                cards[-1]["detail"] = "Повторка выполнена · оплачено в исходном заказе" if order.repeat_of_id else "Выполнен бесплатно · оплата не требуется"
+                "source": order.lead.source if order.lead else "", "status": order.board_status,
+                "detail": order.status_detail})
             client_history.append((order.lead.created_at if order.lead else order.created_at,
                                    f"order-{order.pk}", order.client_id, order.client.phone))
         from apps.customers.phones import normalize_phone
@@ -115,7 +112,7 @@ class BoardAPI(APIView):
         return Response({
             "workers": [{"id": worker.pk, "name": worker.get_full_name() or worker.username, "service_ids": [service.pk for service in worker.services.all()]} for worker in workers],
             "leads": cards,
-            "columns": [{"id": key, "label": label} for key, label in (("new", "Новый"), ("in_progress", "В работе"), ("assigned", "Назначен"), ("completed", "Завершён"), ("paid", "Оплачен"), ("lost", "Неудачные сделки"))],
+            "columns": [{"id": key, "label": label} for key, label in (("new", "Новый"), ("in_progress", "В работе"), ("assigned", "Назначен"), ("completed", "Завершён"), ("paid", "Закрыт"), ("lost", "Неудачные сделки"))],
             "archived_count": leads.filter(status=Lead.Status.LOST).count(),
             "can_change": request.user.has_perm("leads.change_lead"),
             "can_manage": allowed(request.user, "manager"),

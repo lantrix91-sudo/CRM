@@ -93,6 +93,7 @@ def complete_order_with_payment(pk, amount, expenses, comment, actor=None, compl
         f"Получена оплата: {amount} KZT" + ("; без оплаты" if amount == 0 else "")
     ))
     TelegramNotice.objects.filter(order=order, active=True).update(active=False)
+    order.refresh_from_db()
     return order
 
 

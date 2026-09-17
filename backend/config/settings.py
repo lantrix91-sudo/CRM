@@ -9,7 +9,9 @@ load_dotenv(BASE_DIR.parent / ".env")
 
 
 def required_env(name):
-    value = os.environ.get(name)
+    aliases = {"POSTGRES_DB": "PGDATABASE", "POSTGRES_USER": "PGUSER",
+               "POSTGRES_PASSWORD": "PGPASSWORD", "POSTGRES_HOST": "PGHOST", "POSTGRES_PORT": "PGPORT"}
+    value = os.environ.get(name) or os.environ.get(aliases.get(name, name))
     if not value:
         raise ImproperlyConfigured(f"Set {name} in the project root .env file.")
     return value
@@ -17,10 +19,7 @@ def required_env(name):
 
 SECRET_KEY = required_env("DJANGO_SECRET_KEY")
 DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() == "true"
-ALLOWED_HOSTS = [
-    "127.0.0.1",
-    "localhost"
-]
+ALLOWED_HOSTS = [host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,192.168.3.104").split(",") if host.strip()]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -116,3 +115,27 @@ LOGGING = {
     },
     "loggers": {"crm.telegram": {"handlers": ["telegram_console", "telegram_file"], "level": "INFO", "propagate": False}},
 }
+
+
+# Railway terminates TLS; only enable these settings behind its trusted proxy.
+if os.environ.get("DJANGO_PRODUCTION", "").lower() == "true":
+    DEBUG = False
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    configured_hosts = os.environ.get("DJANGO_ALLOWED_HOSTS", railway_domain)
+    ALLOWED_HOSTS = [host.strip() for host in configured_hosts.split(",") if host.strip()]
+    if not ALLOWED_HOSTS:
+        raise ImproperlyConfigured("Set DJANGO_ALLOWED_HOSTS to the public Railway domain.")
+    CSRF_TRUSTED_ORIGINS = ["https://" + host for host in ALLOWED_HOSTS]
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 3600
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+    STORAGES = {
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+    }
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.db.DatabaseCache", "LOCATION": "crm_cache"}}
+    LOGGING["loggers"]["crm.telegram"]["handlers"] = ["telegram_console"]
+    LOGGING["handlers"].pop("telegram_file", None)

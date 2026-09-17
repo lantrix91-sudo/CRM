@@ -68,6 +68,8 @@ def keyboard(notice, accepted=False):
 def notification_text(lead, accepted=False, completed=False):
     service_name = lead.service.name if lead.service_id else "Услуга не выбрана"
     lines = ["✅ Выполнено" if completed else "Заказ принят" if accepted else "🔔 Новый заказ", service_name]
+    if completed and isinstance(lead, Order):
+        lines.append(lead.status_detail)
     if getattr(lead, "repeat_of_id", None):
         lines.append(f"❤️ Повторка · бесплатно · исходный заказ № {lead.repeat_of_id}")
     if lead.client.name:

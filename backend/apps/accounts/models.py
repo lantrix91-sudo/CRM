@@ -27,3 +27,11 @@ class User(AbstractUser):
     class Meta:
         verbose_name = "сотрудник"
         verbose_name_plural = "сотрудники"
+
+
+class MobileSession(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="mobile_sessions")
+    token_hash = models.CharField(max_length=64, unique=True)
+    password_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)

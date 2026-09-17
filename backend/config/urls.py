@@ -10,6 +10,7 @@ from apps.leads.telephony import IncomingCallAPI
 from apps.leads import reports
 
 urlpatterns = [
+    path("api/mobile/", include("apps.accounts.mobile_urls")),
     path("settlements/", accounts.settlements, name="settlements"),
     path("settlements/<int:pk>/", accounts.settlements, name="worker-settlement"),
     path("settlements/shifts/<int:pk>/", accounts.settlement_shift_detail, name="settlement-shift-detail"),
