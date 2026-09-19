@@ -1,5 +1,3 @@
-from pathlib import Path
-from django.contrib.staticfiles import finders
 from apps.accounts.access import allowed
 from django.contrib.auth.decorators import login_required, permission_required
 from django.core.exceptions import PermissionDenied
@@ -42,6 +40,4 @@ def lead_list(request):
 def kanban(request):
     if not allowed(request.user, "manager", "operator"):
         raise PermissionDenied
-    paths = [finders.find(name) for name in ("kanban/kanban.js", "kanban/kanban.css")]
-    version = max((Path(path).stat().st_mtime_ns for path in paths if path), default=0)
-    return render(request, "leads/kanban.html", {"kanban_version": version})
+    return render(request, "leads/kanban.html")

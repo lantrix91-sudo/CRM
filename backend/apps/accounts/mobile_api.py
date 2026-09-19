@@ -8,7 +8,7 @@ from django.contrib.auth import authenticate
 from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Prefetch
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import serializers
@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 from .models import MobileSession
 from .forms import OrderCompletionForm, ReceivedPaymentForm
 from apps.orders.models import Order
-from apps.orders.services import complete_order_with_payment, transition_order, record_event, payment_split
+from apps.orders.services import complete_order_with_payment, transition_order, record_event, payment_split, defer_order
 from apps.orders.reporting import worker_dashboard
 from apps.leads.models import TelegramNotice
 
@@ -95,18 +95,22 @@ class Logout(WorkerAPI):
 
 def order_data(order, detail=False):
     contact = order.status in ("in_progress", "completed", "paid")
+    reminders = [notice.reminder_at for notice in order.telegram_notices.all()
+                 if notice.active and notice.employee_id == order.employee_id and notice.reminder_at]
     result = {
+        "scheduled_at": order.scheduled_at,
+        "deferred_until": max(reminders) if reminders and order.status == "in_progress" else None,
         "id": order.pk, "title": order.title, "service": order.service.name,
         "status": order.status, "status_label": order.display_status,
         "is_free": order.completed_free, "repeat_of": order.repeat_of_id,
         "client": order.client.name if contact else None,
         "phone": order.client.phone if contact else None,
-        "address": order.client.address, "appliance_type": order.appliance_type,
+        "city": order.city.name if order.city_id else "", "address": order.client.address, "appliance_type": order.appliance_type,
         "brand": order.brand, "comment": order.comment if contact else "",
         "amount": str(order.amount) if order.amount is not None else None,
         "expenses": str(order.expenses), "work_comment": order.work_comment,
         "actions": (["start", "reject"] if order.status == "assigned" else
-                    ["complete"] if order.status == "in_progress" else
+                    ["complete", "defer_1"] if order.status == "in_progress" else
                     ["payment"] if order.status == "completed" and not order.completed_free else []),
     }
     if detail:
@@ -115,7 +119,8 @@ def order_data(order, detail=False):
 
 
 def own_orders(user):
-    return Order.objects.filter(employee=user).select_related("client", "service")
+    return Order.objects.filter(employee=user).select_related("client", "service", "city", "lead").prefetch_related(
+        Prefetch("telegram_notices", queryset=TelegramNotice.objects.filter(active=True, reminder_at__isnull=False)))
 
 
 class Orders(WorkerAPI):
@@ -144,6 +149,8 @@ class OrderAction(WorkerAPI):
                 action = request.data.get("action")
                 if action == "start":
                     transition_order(pk, "start", actor=request.user)
+                elif action == "defer_1":
+                    defer_order(pk, actor=request.user)
                 elif action == "reject":
                     if order.status != "assigned":
                         raise DjangoValidationError("Отклонить можно только ещё не принятый заказ.")
@@ -162,9 +169,11 @@ class OrderAction(WorkerAPI):
                     data = form.cleaned_data
                     if order.repeat_of_id and (data["amount"] or data["expenses"]):
                         raise DjangoValidationError("Повторный ремонт выполняется бесплатно.")
-                    percentage = str(request.user.percentage) if request.user.percentage is not None else None
+                    from apps.orders.services import worker_service_percentage
+                    rate = worker_service_percentage(request.user, order.service)
+                    percentage = str(rate) if rate is not None else None
                     net, worker, company = payment_split(order, amount=data["amount"],
-                        expenses=data["expenses"], worker_percentage=request.user.percentage)
+                        expenses=data["expenses"], worker_percentage=rate)
                     payload = {"order": pk, "worker": request.user.pk, "percentage": percentage,
                         "amount": str(data["amount"]), "expenses": str(data["expenses"]), "comment": data["comment"]}
                     return Response({**payload, "net": str(net),
@@ -176,7 +185,9 @@ class OrderAction(WorkerAPI):
                         data = signing.loads(request.data.get("confirmation", ""), salt="mobile-completion", max_age=900)
                     except (signing.BadSignature, TypeError):
                         raise DjangoValidationError("Предпросмотр устарел. Повторите расчёт.")
-                    percentage = str(request.user.percentage) if request.user.percentage is not None else None
+                    from apps.orders.services import worker_service_percentage
+                    rate = worker_service_percentage(request.user, order.service)
+                    percentage = str(rate) if rate is not None else None
                     if data["order"] != pk or data["worker"] != request.user.pk or data["percentage"] != percentage:
                         raise DjangoValidationError("Данные изменились. Повторите расчёт.")
                     complete_order_with_payment(pk, Decimal(data["amount"]), Decimal(data["expenses"]),
@@ -206,4 +217,4 @@ class OrderAction(WorkerAPI):
 class Profile(WorkerAPI):
     def get(self, request):
         return Response({"name": request.user.get_full_name() or request.user.username,
-                         "percentage": request.user.percentage, "dashboard": worker_dashboard(request.user)})
+                         "dashboard": worker_dashboard(request.user)})

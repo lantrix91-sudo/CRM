@@ -7,6 +7,10 @@ from django.core.validators import MinValueValidator
 class Order(models.Model):
     """A client's confirmed request for one service."""
 
+    @property
+    def scheduled_at(self):
+        return self.lead.scheduled_at if self.lead_id else None
+
     class Status(models.TextChoices):
         NEW = "new", "Новый"
         ASSIGNED = "assigned", "Назначен мастер"
@@ -23,7 +27,6 @@ class Order(models.Model):
     is_free = models.BooleanField("завершён бесплатно", default=False)
     expenses = models.DecimalField("расходы (KZT)", max_digits=12, decimal_places=2, default=0, validators=[MinValueValidator(0)])
     work_comment = models.TextField("что сделано", blank=True, max_length=2000)
-    worker_percentage = models.DecimalField("процент мастера при оплате", max_digits=5, decimal_places=2, null=True, blank=True)
     completed_at = models.DateTimeField("выполнен", null=True, blank=True)
     cancellation_reason = models.CharField("причина отмены", max_length=300, blank=True)
     cancelled_at = models.DateTimeField("дата отмены", null=True, blank=True)
@@ -37,6 +40,7 @@ class Order(models.Model):
     brand = models.CharField("бренд", max_length=100, blank=True)
     comment = models.TextField("комментарий", max_length=1000, blank=True)
     title = models.CharField("название", max_length=200)
+    city = models.ForeignKey("customers.City", verbose_name="город", on_delete=models.PROTECT, related_name="orders", null=True, blank=True)
     client = models.ForeignKey(
         "customers.Client", verbose_name="клиент",
         on_delete=models.PROTECT, related_name="orders",
@@ -57,6 +61,11 @@ class Order(models.Model):
 
     def __str__(self):
         return self.title
+
+    @property
+    def worker_percentage(self):
+        from .services import worker_service_percentage
+        return worker_service_percentage(self.employee, self.service)
 
     @property
     def completed_free(self):

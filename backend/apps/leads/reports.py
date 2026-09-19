@@ -44,7 +44,7 @@ def history(request, pk):
     customer = get_object_or_404(Client, pk=pk)
     return render(request, "leads/history.html", {
         "customer": customer,
-        "leads": customer.leads.select_related("service").order_by("-created_at")[:50],
+        "leads": customer.leads.select_related("service").prefetch_related("events").order_by("-created_at")[:50],
         "orders": customer.orders.select_related("service").order_by("-created_at")[:50],
         "calls": customer.calls.order_by("-created_at")[:50],
     })

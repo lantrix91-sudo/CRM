@@ -2,6 +2,7 @@ from django import forms
 from django.contrib.auth.password_validation import validate_password
 from .models import User
 from apps.customers.models import Client
+from apps.customers.models import City
 from apps.leads.models import Lead
 from apps.orders.models import Order
 
@@ -18,9 +19,13 @@ class ClientForm(forms.ModelForm):
             raise forms.ValidationError(str(error))
 
 class LeadForm(forms.ModelForm):
+    scheduled_at = forms.DateTimeField(label="Дата и время записи", required=False,
+        widget=forms.DateTimeInput(format="%Y-%m-%dT%H:%M", attrs={"type": "datetime-local"}),
+        help_text="Необязательно. Время CRM (Asia/Qyzylorda). Мастеру придёт напоминание в Telegram.")
     client_name = forms.CharField(label="Имя", max_length=200)
     client_phone = forms.CharField(label="Номер телефона", max_length=32)
     client_address = forms.CharField(label="Адрес, квартира", max_length=300, required=False)
+    city = forms.ModelChoiceField(queryset=City.objects.filter(is_active=True), label="Город")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -54,13 +59,15 @@ class LeadForm(forms.ModelForm):
 
     class Meta:
         model = Lead
-        fields = ("client_name", "client_address", "client_phone", "service", "appliance_type", "brand", "comment", "source")
+        fields = ("city", "client_name", "client_address", "client_phone", "service", "appliance_type", "brand", "comment", "source", "scheduled_at")
         widgets = {"comment": forms.Textarea(attrs={"rows": 3}), "source": forms.Select(choices=[("", "Не указан")] + [(s, s) for s in ("OLX", "Google", "Instagram", "Telegram", "Телефон")])}
 
 class OrderForm(forms.ModelForm):
+    city = forms.ModelChoiceField(queryset=City.objects.filter(is_active=True), label="Город")
+
     class Meta:
         model = Order
-        fields = ("title", "client", "service", "employee", "amount")
+        fields = ("city", "title", "client", "service", "employee", "amount")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -76,7 +83,7 @@ class EmployeeForm(forms.ModelForm):
     password = forms.CharField(label="Пароль (для нового сотрудника обязателен)", widget=forms.PasswordInput, required=False)
     class Meta:
         model = User
-        fields = ("username", "first_name", "last_name", "role", "percentage", "curator", "is_active", "services", "is_available", "max_active_leads", "telegram_chat_id")
+        fields = ("username", "first_name", "last_name", "role", "curator", "is_active", "services", "service_cities", "is_available", "max_active_leads", "telegram_chat_id")
 
     def clean(self):
         data = super().clean()
@@ -111,13 +118,21 @@ class EmployeeForm(forms.ModelForm):
 
 
 class CallResolveForm(forms.Form):
-    client = forms.ModelChoiceField(queryset=Client.objects.none(), label="Клиент")
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.none(),
+        label="Клиент",
+    )
+
+    city = forms.ModelChoiceField(
+        queryset=City.objects.filter(is_active=True),
+        label="Город",
+    )
 
     def __init__(self, *args, phone, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["client"].queryset = Client.objects.filter(normalized_phone=phone)
-
-
+        self.fields["client"].queryset = Client.objects.filter(
+            normalized_phone=phone
+        )
 from apps.services.models import Service
 
 class ServiceForm(forms.ModelForm):

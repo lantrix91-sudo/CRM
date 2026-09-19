@@ -1,11 +1,13 @@
 export type Status = "new" | "in_progress" | "assigned" | "completed" | "paid" | "lost";
 export type Lead = {
+  scheduled_at?: string | null;
   repeat_of_id?: number | null;
   delivery?: string | null; waiting_minutes?: number | null; overdue?: boolean; assignment_notice?: string | null; key: string; kind: "lead" | "order"; detail: string; id: number; service_id: number | null; employee_id: number | null; title: string; client_name: string; client_previous_count: number; phone: string;
-  service_name: string; employee_name: string | null; employee_active_count: number; source: string; status: Status;
+  service_name: string; employee_name: string | null; employee_active_count: number; source: string; status: Status; city_id: number; city_name: string;
 };
 export type Board = {
-  workers?: { id: number; name: string; service_ids: number[] }[];
+  workers?: { id: number; name: string; service_ids: number[]; city_ids: number[] }[];
+  cities: { id: number; name: string; count: number }[];
   leads: Lead[]; columns: { id: Status; label: string }[];
   can_manage?: boolean; archived_count: number; can_change: boolean; can_add: boolean;
 };
@@ -21,7 +23,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export const getBoard = () => request<Board>("/api/leads/board/");
+export const getBoard = (city?: number) => request<Board>(`/api/leads/board/${city ? `?city=${city}` : ""}`);
 export const saveStatus = (lead: Lead, status: Status) => request<{ id: number; status: Status }>(
   `/api/leads/${lead.id}/status/`,
   {

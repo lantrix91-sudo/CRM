@@ -5,7 +5,7 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 
 from .models import Order, SettlementShift, WorkerTransfer
-from .services import payment_split
+from .services import payment_split, worker_service_percentage
 from .settlements import totals
 
 
@@ -15,7 +15,7 @@ def order_breakdown(order):
         "service_amount": order.amount or Decimal("0"),
         "expenses": order.expenses or Decimal("0"),
         "net_amount": net_amount,
-        "worker_percentage": order.worker_percentage,
+        "worker_percentage": worker_service_percentage(order.employee, order.service),
         "worker_amount": worker_amount,
         "company_amount": company_amount,
     }
@@ -134,11 +134,6 @@ def export_rows(worker, date_from=None, date_to=None):
         transfers = transfers.filter(created_at__gte=start)
     if end:
         transfers = transfers.filter(created_at__lt=end)
-    # Missing historical percentages make both opening and closing balances unknown.
-    incomplete = paid_orders(worker, end=end, legacy_fallback=True).filter(worker_percentage__isnull=True)
-    if incomplete.exists():
-        from django.core.exceptions import ValidationError
-        raise ValidationError("Невозможно сформировать точный отчёт: есть оплаченные заказы без сохранённого процента мастера.")
     opening_balance = export_opening_balance(worker, start)
     rows = []
     if opening_balance:

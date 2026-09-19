@@ -24,7 +24,7 @@ def assign_lead(pk, employee_id=None):
     # Lock eligible employees in a fixed order. Concurrent assignments wait before counting load.
     employees = list(User.objects.select_for_update().filter(
         is_active=True, role="worker", is_available=True, services=lead.service_id,
-    ).order_by("pk"))
+    ).prefetch_related("service_cities").order_by("pk"))
     workloads = dict(Lead.objects.filter(
         employee_id__in=[employee.pk for employee in employees],
         status__in=(Lead.Status.NEW, Lead.Status.IN_PROGRESS, Lead.Status.ASSIGNED),
@@ -44,7 +44,13 @@ def assign_lead(pk, employee_id=None):
         available = [employee for employee in available if employee.pk == employee_id]
     if not available:
         raise AssignmentUnavailable("Нет доступных сотрудников для этой услуги. Проверьте навыки, доступность и загрузку.")
-    employee = min(available, key=lambda item: (workloads.get(item.pk, 0), item.pk))
+    employee = min(
+        available,
+        key=lambda item: (
+            0 if lead.city_id in {city.pk for city in item.service_cities.all()} else 1,
+            workloads.get(item.pk, 0), item.pk,
+        ),
+    )
     lead.employee = employee
     lead.status = Lead.Status.ASSIGNED
     lead.save(update_fields=("employee", "status"))

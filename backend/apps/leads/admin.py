@@ -15,6 +15,10 @@ class LeadAdmin(admin.ModelAdmin):
     list_select_related = ("client", "service", "employee")
     readonly_fields = ("created_at",)
 
+    def save_model(self, request, obj, form, change):
+        obj._history_actor = request.user
+        super().save_model(request, obj, form, change)
+
     actions = ("create_orders",)
 
     @admin.action(description="Клиент согласился: создать заказ", permissions=["convert"])

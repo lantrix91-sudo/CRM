@@ -26,10 +26,11 @@ class LeadCardSerializer(serializers.ModelSerializer):
     phone = serializers.CharField(source="client.phone", read_only=True)
     service_name = serializers.CharField(source="service.name", read_only=True, default="Услуга не выбрана")
     employee_name = serializers.SerializerMethodField()
+    city_name = serializers.CharField(source="city.name", read_only=True)
 
     class Meta:
         model = Lead
-        fields = ("id", "employee_id", "title", "client_name", "phone", "service_id", "service_name", "employee_name", "source", "status")
+        fields = ("id", "employee_id", "title", "client_name", "phone", "service_id", "service_name", "employee_name", "source", "status", "city_id", "city_name", "scheduled_at")
 
     def get_employee_name(self, obj):
         if obj.employee is None:
@@ -51,9 +52,18 @@ class BoardAPI(APIView):
     permission_classes = (BoardPermission,)
 
     def get(self, request):
-        leads = Lead.objects.select_related("client", "service", "employee").order_by("-created_at", "-pk")
+        city_id = request.query_params.get("city")
+        if city_id and city_id.isdigit():
+            city_id = int(city_id)
+        else:
+            city_id = None
+        city_filter = {"city_id": city_id} if city_id else {}
+        leads = Lead.objects.select_related("client", "service", "employee", "city", ).filter( **city_filter ).order_by("-created_at", "-pk",)
         from apps.accounts.models import User
-        workers = User.objects.filter(role="worker", is_active=True, is_available=True).prefetch_related("services").order_by("username")
+        workers = User.objects.filter(role="worker", is_active=True, is_available=True,)
+        if city_id:
+            workers = workers.filter(service_cities__id=city_id)
+        workers = workers.prefetch_related( "services", "service_cities", ).order_by("username")
         from apps.orders.models import Order
         from django.utils import timezone
         notices = {}
@@ -66,7 +76,7 @@ class BoardAPI(APIView):
             card.update(key=f"lead-{lead.pk}", kind="lead", status="lost" if lead.status == "lost" else "new", detail=(f"Причина: {lead.lost_reason or 'Не указана'}. Закрыл: {lead.lost_by or 'Не указан'}. Дата: {lead.lost_at.strftime('%d.%m.%Y') if lead.lost_at else 'Не указана'}" if lead.status == "lost" else "Ожидает согласия клиента"))
             cards.append(card)
             client_history.append((lead.created_at, card["key"], lead.client_id, lead.client.phone))
-        for order in Order.objects.select_related("client", "service", "employee", "lead").order_by("-created_at"):
+        for order in Order.objects.select_related("client", "service", "employee", "lead", "city").filter(**city_filter).order_by("-created_at"):
             notice = notices.get(order.pk)
             waiting = max(0, int((timezone.now() - notice.created_at).total_seconds() // 60)) if notice and order.status == "assigned" else None
             delivery = None
@@ -81,6 +91,8 @@ class BoardAPI(APIView):
                 "repeat_of_id": order.repeat_of_id, "id": order.pk, "key": f"order-{order.pk}", "kind": "order", "title": order.title,
                 "client_name": order.client.name, "phone": order.client.phone, "service_id": order.service_id,
                 "service_name": order.service.name, "employee_id": order.employee_id,
+                "city_id": order.city_id, "city_name": order.city.name if order.city_id else "",
+                "scheduled_at": order.scheduled_at,
                 "employee_name": (order.employee.get_full_name() or order.employee.username) if order.employee else None,
                 "source": order.lead.source if order.lead else "", "status": order.board_status,
                 "detail": order.status_detail})
@@ -110,14 +122,27 @@ class BoardAPI(APIView):
             card["client_previous_count"] = previous_counts[card["key"]]
             card["employee_active_count"] = workloads.get(card["employee_id"], 0)
         return Response({
-            "workers": [{"id": worker.pk, "name": worker.get_full_name() or worker.username, "service_ids": [service.pk for service in worker.services.all()]} for worker in workers],
+            "workers": [{"id": worker.pk, "name": worker.get_full_name() or worker.username, "service_ids": [service.pk for service in worker.services.all()], "city_ids": [city.pk for city in worker.service_cities.all()]} for worker in workers],
             "leads": cards,
             "columns": [{"id": key, "label": label} for key, label in (("new", "Новый"), ("in_progress", "В работе"), ("assigned", "Назначен"), ("completed", "Завершён"), ("paid", "Закрыт"), ("lost", "Неудачные сделки"))],
             "archived_count": leads.filter(status=Lead.Status.LOST).count(),
             "can_change": request.user.has_perm("leads.change_lead"),
             "can_manage": allowed(request.user, "manager"),
             "can_add": request.user.has_perm("leads.add_lead"),
+            "cities": self._city_counts(request),
         })
+
+    @staticmethod
+    def _city_counts(request):
+        from apps.customers.models import City
+        from django.db.models import Count, Q
+        lead_q = Q(leads__order__isnull=True)
+        order_q = Q(orders__isnull=False)
+        rows = City.objects.filter(is_active=True).annotate(
+            lead_count=Count("leads", filter=lead_q, distinct=True),
+            order_count=Count("orders", filter=order_q, distinct=True),
+        ).order_by("name")
+        return [{"id": city.pk, "name": city.name, "count": city.lead_count + city.order_count} for city in rows]
 
 
 class LeadStatusAPI(APIView):

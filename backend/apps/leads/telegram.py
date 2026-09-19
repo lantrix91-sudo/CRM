@@ -68,6 +68,10 @@ def keyboard(notice, accepted=False):
 def notification_text(lead, accepted=False, completed=False):
     service_name = lead.service.name if lead.service_id else "Услуга не выбрана"
     lines = ["✅ Выполнено" if completed else "Заказ принят" if accepted else "🔔 Новый заказ", service_name]
+    if lead.scheduled_at:
+        lines.append(f"Запись: {timezone.localtime(lead.scheduled_at):%d.%m.%Y %H:%M}")
+    if getattr(lead, "city_id", None):
+        lines.append(f"Город: {lead.city.name}")
     if completed and isinstance(lead, Order):
         lines.append(lead.status_detail)
     if getattr(lead, "repeat_of_id", None):
@@ -126,6 +130,8 @@ def deliver_reminders(api):
 
 
 def deliver_pending(api):
+    from .appointments import deliver_appointment_reminders
+    deliver_appointment_reminders(api)
     deliver_reminders(api)
     ids = list(TelegramNotice.objects.filter(
         state="pending", next_attempt_at__lte=timezone.now(),
@@ -139,8 +145,8 @@ def deliver_pending(api):
             notice = TelegramNotice.objects.select_for_update().get(pk=pk)
             if notice.state != "pending":
                 continue
-            accepted_repeat = bool(notice.order_id and lead.repeat_of_id and lead.status == Order.Status.IN_PROGRESS)
-            if not is_current(notice, lead) or (lead.status != Lead.Status.ASSIGNED and not accepted_repeat):
+            accepted_order = bool(notice.order_id and lead.status == Order.Status.IN_PROGRESS)
+            if not is_current(notice, lead) or (lead.status != Lead.Status.ASSIGNED and not accepted_order):
                 logger.info("delivery_cancelled notice=%s order=%s worker=%s", notice.pk, notice.order_id, notice.employee_id)
                 notice.state = "cancelled"
                 notice.active = False
@@ -155,7 +161,7 @@ def deliver_pending(api):
             logger.info("delivery_attempt notice=%s order=%s worker=%s chat=%s attempt=%s", notice.pk, notice.order_id, employee.pk, employee.telegram_chat_id, notice.attempts + 1)
             try:
                 result = api.call("sendMessage", chat_id=employee.telegram_chat_id,
-                                  text=notification_text(lead, accepted=accepted_repeat), reply_markup=keyboard(notice, accepted=accepted_repeat))
+                                  text=notification_text(lead, accepted=accepted_order), reply_markup=keyboard(notice, accepted=accepted_order))
             except TelegramError:
                 logger.warning("delivery_failed notice=%s worker=%s", notice.pk, employee.pk)
                 notice.attempts += 1
@@ -213,12 +219,9 @@ def apply_callback(callback):
             return "Для повторки доступны перенос и завершение.", None, None
         if lead.status == Order.Status.IN_PROGRESS:
             if action in ("defer_1", "defer_2"):
-                days = int(action[-1])
-                notice.reminder_at = timezone.now() + timedelta(days=days)
-                notice.amount_prompt_id = None
-                notice.save(update_fields=("reminder_at", "amount_prompt_id"))
-                text = f"⏳ Отложено до {timezone.localtime(notice.reminder_at):%d.%m.%Y %H:%M}"
-                record_event(lead, notice.employee, text)
+                from apps.orders.services import defer_order
+                text = defer_order(lead.pk, days=int(action[-1]), actor=notice.employee)
+                notice.refresh_from_db()
                 return text, notice, keyboard(notice, accepted=True)
             if action in ("worker_reject", "client_reject"):
                 if action == "worker_reject":
@@ -464,7 +467,8 @@ def apply_amount_message(message, api=None, confirmed=False):
             return "Подтвердите расчёт в Telegram."
         from decimal import Decimal, ROUND_HALF_UP
         net = amount - expenses
-        percentage = notice.employee.percentage
+        from apps.orders.services import worker_service_percentage
+        percentage = worker_service_percentage(notice.employee, order.service)
         split = "Процент не установлен — доли пока не рассчитаны."
         if percentage is not None:
             worker_part = (net * percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

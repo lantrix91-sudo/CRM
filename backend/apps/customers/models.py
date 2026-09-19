@@ -1,6 +1,21 @@
 from django.db import models
 
 
+class City(models.Model):
+    name = models.CharField("название", max_length=120, unique=True)
+    is_active = models.BooleanField("активен", default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        verbose_name = "город"
+        verbose_name_plural = "города"
+
+    def __str__(self):
+        return self.name
+
+
 class Client(models.Model):
     name = models.CharField("имя", max_length=200)
     phone = models.CharField("номер WhatsApp", max_length=32, db_index=True)

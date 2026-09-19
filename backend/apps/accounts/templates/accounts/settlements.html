@@ -1,9 +1,53 @@
-{% extends "accounts/base.html" %}{% block content %}
-<h1>Расчёты с мастерами</h1>
-{% if can_manage %}{% for item in workers %}<p><a href="{% url 'worker-settlement' item.pk %}">{{ item.get_full_name|default:item.username }}</a></p>{% endfor %}{% endif %}
-{% if worker %}<h2>{{ worker.get_full_name|default:worker.username }}</h2>
-<div class="card"><h3>Текущая смена</h3><p>Выручка: {{ summary.current_shift_gross }} KZT</p><p>Расходы: {{ summary.current_shift_expenses }} KZT</p><p>Доля мастера: {{ summary.current_shift_worker_share }} KZT</p><p>Доля компании: {{ summary.current_shift_company_share }} KZT</p><h3>Расчёт с компанией</h3><p>Долг с прошлых смен: {{ summary.carried_debt }} KZT</p><p>Долг текущей смены: {{ summary.current_shift_debt }} KZT</p><hr><p><strong>К передаче: {{ summary.total_balance_due }} KZT</strong></p><p>Всего передано мастером: {{ summary.total_transferred_all_time }} KZT</p>
-{% if summary.missing %}<p>Расчёт неполный. Нет процента в заказах: {{ summary.missing|join:", " }}. Закрытие и переводы недоступны.</p>{% endif %}</div>
-{% if can_manage and not summary.missing %}<div class="card"><h2>Подтвердить полученный перевод</h2><form method="post">{% csrf_token %}{{ form.as_p }}<button name="action" value="transfer">Перевод получен</button></form></div><form method="post">{% csrf_token %}<button name="action" value="close">Закрыть смену</button></form><p>Начисления новой смены начнутся с нуля. Непогашенный долг сохраняется.</p>{% endif %}
-<h2>Последние переводы</h2>{% for transfer in recent_transfers %}<p>{{ transfer.created_at|date:"d.m.Y H:i" }} · {{ transfer.amount }} KZT · {{ transfer.received_by }} · {{ transfer.comment }}</p>{% empty %}<p>Переводов пока нет.</p>{% endfor %}
-<form method="get" action="{% if can_manage %}{% url 'worker-settlement-export' worker.pk %}{% else %}{% url 'settlement-export' %}{% endif %}"><label>С даты <input type="date" name="date_from"></label> <label>По дату <input type="date" name="date_to"></label> <button type="submit">Экспортировать Excel</button></form><h2>Последние закрытые смены</h2>{% for shift in recent_shifts %}<p><a href="{% url 'settlement-shift-detail' shift.pk %}">Смена № {{ shift.pk }}</a> · {{ shift.closed_at|date:"d.m.Y H:i" }} · Мастеру: {{ shift.worker_amount }} KZT · Доля компании: {{ shift.manager_amount }} KZT · Остаток на закрытие: {{ shift.balance }} KZT</p>{% empty %}<p>Закрытых смен пока нет.</p>{% endfor %}{% endif %}{% endblock %}
+{% extends "accounts/base.html" %}
+{% load l10n %}
+{% block content %}
+<div class="settlement-dashboard">
+  <header class="settlement-hero">
+    <div>
+      <p class="eyebrow">ФИНАНСЫ И СМЕНЫ</p>
+      <h1>Расчёты с мастерами</h1>
+      <p class="settlement-subtitle">Контроль выручки, долей и переводов по каждому мастеру.</p>
+    </div>
+    {% if can_manage %}<div class="settlement-headline-stat"><span>Мастера</span><strong>{{ workers|length }}</strong><small>в команде</small></div>{% endif %}
+  </header>
+
+  {% if worker %}
+  <section class="settlement-kpis" aria-label="Итоги текущей смены">
+    <article class="settlement-kpi"><span>Выручка за смену</span><strong>{{ summary.current_shift_gross|floatformat:"-2"|localize }} ₸</strong><small>текущая смена</small></article>
+    <article class="settlement-kpi"><span>Доля мастера</span><strong>{{ summary.current_shift_worker_share|floatformat:"-2"|localize }} ₸</strong><small>к начислению</small></article>
+    <article class="settlement-kpi settlement-kpi-accent"><span>К передаче</span><strong>{{ summary.total_balance_due|floatformat:"-2"|localize }} ₸</strong><small>остаток расчёта</small></article>
+    <article class="settlement-kpi"><span>Получено всего</span><strong>{{ summary.total_transferred_all_time|floatformat:"-2"|localize }} ₸</strong><small>за всё время</small></article>
+  </section>
+  {% endif %}
+
+  {% if can_manage %}
+  <section class="worker-picker" aria-label="Выбор мастера">
+    <div class="settlement-section-heading"><div><p class="eyebrow">КОМАНДА</p><h2>Мастера</h2></div><span class="badge">{{ workers|length }} в команде</span></div>
+    <div class="worker-list">
+      {% for item in workers %}
+      <article class="worker-card{% if worker and worker.pk == item.pk %} is-selected{% endif %}">
+        <div class="worker-card-head"><span class="worker-avatar">{% if item.first_name or item.last_name %}{{ item.first_name|first|upper }}{{ item.last_name|first|upper }}{% else %}{{ item.username|first|upper }}{% endif %}</span><div><h3>{{ item.get_full_name|default:item.username }}</h3><span class="worker-role">Мастер</span></div></div>
+        <a class="worker-card-link" href="{% url 'worker-settlement' item.pk %}">Открыть расчёты <span>→</span></a>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if worker %}
+  <section class="selected-settlement">
+    <div class="settlement-person"><span class="worker-avatar">{% if worker.first_name or worker.last_name %}{{ worker.first_name|first|upper }}{{ worker.last_name|first|upper }}{% else %}{{ worker.username|first|upper }}{% endif %}</span><div><p class="eyebrow">ВЫБРАННЫЙ МАСТЕР</p><h2>{{ worker.get_full_name|default:worker.username }}</h2></div></div>
+    <div class="card settlement-summary"><div class="settlement-section-heading"><div><p class="eyebrow">ТЕКУЩАЯ СМЕНА</p><h2>Финансовый итог</h2></div>{% if summary.orders %}<span class="settlement-status"><span class="status-dot"></span>Активная смена</span>{% else %}<span class="settlement-status is-quiet">Нет новых заказов</span>{% endif %}</div>
+      <div class="settlement-metrics"><p><span>Выручка</span><strong>{{ summary.current_shift_gross|floatformat:"-2"|localize }} ₸</strong></p><p><span>Расходы</span><strong>{{ summary.current_shift_expenses|floatformat:"-2"|localize }} ₸</strong></p><p><span>Доля мастера</span><strong>{{ summary.current_shift_worker_share|floatformat:"-2"|localize }} ₸</strong></p><p><span>Доля компании</span><strong>{{ summary.current_shift_company_share|floatformat:"-2"|localize }} ₸</strong></p></div>
+      <div class="settlement-debt"><p><span>Долг с прошлых смен</span><strong>{{ summary.carried_debt|floatformat:"-2"|localize }} ₸</strong></p><p><span>Долг текущей смены</span><strong>{{ summary.current_shift_debt|floatformat:"-2"|localize }} ₸</strong></p></div>
+      <p class="balance-due"><span>К передаче</span><strong>{{ summary.total_balance_due|floatformat:"-2"|localize }} ₸</strong></p><p class="settlement-note">Всего передано мастером: {{ summary.total_transferred_all_time|floatformat:"-2"|localize }} ₸</p>
+      {% if summary.missing %}<p class="settlement-warning">Расчёт неполный. Нет процента в заказах: {{ summary.missing|join:", " }}. Закрытие и переводы недоступны.</p>{% endif %}
+    </div>
+  </section>
+  {% if can_manage and not summary.missing %}<div class="card transfer-card"><h2>Подтвердить полученный перевод</h2><form method="post">{% csrf_token %}{{ form.as_p }}<button name="action" value="transfer">Перевод получен</button></form></div><form class="close-shift-form" method="post">{% csrf_token %}<button class="secondary" name="action" value="close">Закрыть смену</button></form><p class="settlement-note">Начисления новой смены начнутся с нуля. Непогашенный долг сохраняется.</p>{% endif %}
+  <section class="settlement-section"><div class="settlement-section-heading"><div><p class="eyebrow">ИСТОРИЯ</p><h2>Последние переводы</h2></div></div><div class="settlement-history">{% for transfer in recent_transfers %}<p><strong>{{ transfer.amount|floatformat:"-2"|localize }} ₸</strong><span>{{ transfer.created_at|date:"d.m.Y H:i" }} · {{ transfer.received_by }}{% if transfer.comment %} · {{ transfer.comment }}{% endif %}</span></p>{% empty %}<p>Переводов пока нет.</p>{% endfor %}</div></section>
+  <form class="export-form" method="get" action="{% if can_manage %}{% url 'worker-settlement-export' worker.pk %}{% else %}{% url 'settlement-export' %}{% endif %}"><label>С даты <input type="date" name="date_from"></label><label>По дату <input type="date" name="date_to"></label><button type="submit">Экспортировать Excel</button></form>
+  <section class="settlement-section"><div class="settlement-section-heading"><div><p class="eyebrow">АРХИВ</p><h2>Последние закрытые смены</h2></div></div><div class="settlement-history">{% for shift in recent_shifts %}<p><a href="{% url 'settlement-shift-detail' shift.pk %}"><strong>Смена № {{ shift.pk }}</strong><span>{{ shift.closed_at|date:"d.m.Y H:i" }} · Мастеру: {{ shift.worker_amount|floatformat:"-2"|localize }} ₸ · Доля компании: {{ shift.manager_amount|floatformat:"-2"|localize }} ₸ · Остаток: {{ shift.balance|floatformat:"-2"|localize }} ₸</span></a></p>{% empty %}<p>Закрытых смен пока нет.</p>{% endfor %}</div></section>
+  {% endif %}
+</div>
+{% endblock %}

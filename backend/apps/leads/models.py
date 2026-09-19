@@ -2,7 +2,7 @@ import uuid
 from django.utils import timezone
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 
 
 class Lead(models.Model):
@@ -13,6 +13,11 @@ class Lead(models.Model):
         WON = "won", "Выполнен"
         CONVERTED = "converted", "Создан заказ"
         LOST = "lost", "Закрыт без сделки"
+
+    scheduled_at = models.DateTimeField("дата и время записи", null=True, blank=True, db_index=True)
+    appointment_reminded_at = models.DateTimeField(null=True, blank=True, editable=False)
+    appointment_reminded_for = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+        editable=False, on_delete=models.SET_NULL, related_name="appointment_reminders")
 
     lost_reason = models.CharField("причина отказа", max_length=300, blank=True)
     lost_at = models.DateTimeField("закрыта без сделки", null=True, blank=True)
@@ -26,6 +31,7 @@ class Lead(models.Model):
     brand = models.CharField("бренд", max_length=100, blank=True)
     comment = models.TextField("комментарий", max_length=1000, blank=True)
     title = models.CharField("название", max_length=200)
+    city = models.ForeignKey("customers.City", verbose_name="город", on_delete=models.PROTECT, related_name="leads", null=True, blank=True)
     client = models.ForeignKey(
         "customers.Client", verbose_name="клиент",
         on_delete=models.PROTECT, related_name="leads",
@@ -45,8 +51,39 @@ class Lead(models.Model):
         verbose_name = "лид"
         verbose_name_plural = "лиды"
 
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        fields = kwargs.get("update_fields")
+        track = fields is None or "scheduled_at" in fields
+        previous = type(self).objects.select_for_update().filter(pk=self.pk).values_list("scheduled_at", flat=True).first() if self.pk and track else None
+        changed = track and previous != self.scheduled_at
+        if changed:
+            self.appointment_reminded_at = None
+            self.appointment_reminded_for_id = None
+            if fields is not None:
+                kwargs["update_fields"] = set(fields) | {"appointment_reminded_at", "appointment_reminded_for"}
+        super().save(*args, **kwargs)
+        if changed:
+            def label(value):
+                return timezone.localtime(value).strftime("%d.%m.%Y %H:%M") if value else "не указана"
+            actor = getattr(self, "_history_actor", None)
+            LeadEvent.objects.create(lead=self, actor=actor,
+                actor_name=(actor.get_full_name() or actor.username) if actor else "Система",
+                description=f"Запись: {label(previous)} → {label(self.scheduled_at)}")
+
     def __str__(self):
         return self.title
+
+
+class LeadEvent(models.Model):
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="events")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    actor_name = models.CharField(max_length=301)
+    description = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-pk")
 
 
 class TelegramNotice(models.Model):

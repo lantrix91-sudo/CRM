@@ -8,10 +8,11 @@ from decimal import Decimal
 
 from .access import allowed, role_of, roles_required
 from .forms import ReceivedPaymentForm, OrderCompletionForm, ClientForm, LeadForm, OrderForm, EmployeeForm, ServiceForm
-from .models import User
+from .models import User, WorkerServiceRate
 from apps.leads.models import Lead, TelegramNotice
 from apps.orders.models import Order
 from apps.services.models import Service
+from apps.customers.models import City
 from apps.orders.services import convert_lead, transition_order, complete_order_with_payment, record_event
 
 @login_required
@@ -126,18 +127,19 @@ def order_detail(request, pk):
                     if order.status != Order.Status.IN_PROGRESS or order.repeat_of_id:
                         raise ValidationError("Предпросмотр завершения больше недоступен.")
                     if completion_form.is_valid():
-                        from apps.orders.services import payment_split
+                        from apps.orders.services import payment_split, worker_service_percentage
                         amount = completion_form.cleaned_data["amount"]
                         expenses = completion_form.cleaned_data["expenses"]
+                        percentage = worker_service_percentage(order.employee, order.service)
                         net, worker_amount, manager_amount = payment_split(
                             order, amount=amount, expenses=expenses,
-                            worker_percentage=order.employee.percentage,
+                            worker_percentage=percentage,
                         )
                         request.session[preview_key] = {
                             "amount": str(amount), "expenses": str(expenses),
                             "comment": completion_form.cleaned_data["comment"],
                             "status": order.status, "employee_id": order.employee_id,
-                            "worker_percentage": str(order.employee.percentage) if order.employee.percentage is not None else None,
+                            "worker_percentage": str(percentage) if percentage is not None else None,
                             "net": str(net), "worker_amount": str(worker_amount) if worker_amount is not None else None,
                             "company_amount": str(manager_amount) if manager_amount is not None else None,
                         }
@@ -157,7 +159,9 @@ def order_detail(request, pk):
                         request.session.pop(preview_key, None)
                         request.session.modified = True
                         raise ValidationError("Предпросмотр устарел. Заполните данные заново.")
-                    current_percentage = str(order.employee.percentage) if order.employee.percentage is not None else None
+                    from apps.orders.services import worker_service_percentage
+                    current_rate = worker_service_percentage(order.employee, order.service)
+                    current_percentage = str(current_rate) if current_rate is not None else None
                     if current_percentage != preview.get("worker_percentage"):
                         request.session.pop(preview_key, None)
                         request.session.modified = True
@@ -204,7 +208,7 @@ def order_detail(request, pk):
                     raise PermissionDenied
             except ValidationError as error:
                 messages.error(request, "; ".join(error.messages))
-        from apps.orders.services import payment_split
+        from apps.orders.services import payment_split, worker_service_percentage
         net, worker_amount, manager_amount = payment_split(order)
         preview_values = None
         if preview:
@@ -217,7 +221,7 @@ def order_detail(request, pk):
                 "company_amount": Decimal(preview["company_amount"]) if preview["company_amount"] is not None else None,
                 "worker_percentage": Decimal(preview["worker_percentage"]) if preview["worker_percentage"] is not None else None,
             }
-        return render(request, "accounts/order.html", {"order": order, "form": form, "payment_form": payment_form, "completion_form": completion_form, "completion_preview": preview_values, "payment_net": net, "payment_worker": worker_amount, "payment_manager": manager_amount})
+        return render(request, "accounts/order.html", {"order": order, "form": form, "payment_form": payment_form, "completion_form": completion_form, "completion_preview": preview_values, "payment_net": net, "payment_worker": worker_amount, "payment_manager": manager_amount, "payment_percentage": worker_service_percentage(order.employee, order.service)})
 
 @roles_required("manager", "operator")
 def edit_record(request, kind, pk=None):
@@ -263,6 +267,7 @@ def edit_record(request, kind, pk=None):
         form = form_class(instance=obj)
     else:
         form = form_class(request.POST or None, instance=obj)
+        form.instance._history_actor = request.user
         if request.method == "POST" and form.is_valid():
             form.save()
             return redirect("operator-home")
@@ -300,10 +305,42 @@ def employees(request, pk=None):
         if obj and obj.pk == request.user.pk and (form.cleaned_data["role"] != "manager" or not form.cleaned_data["is_active"]):
             form.add_error("role", "Нельзя отключить или изменить собственную роль.")
         else:
-            form.save()
-            return redirect("employees")
+            saved = form.save()
+            if saved.role == User.Role.WORKER:
+                saved.service_cities.set(City.objects.filter(pk__in=request.POST.getlist("service_cities"), is_active=True))
+                from decimal import Decimal, InvalidOperation
+                for service in Service.objects.all():
+                    raw_rate = request.POST.get(f"rate_{service.pk}", "").strip()
+                    active = request.POST.get(f"active_{service.pk}") == "on"
+                    if not raw_rate:
+                        WorkerServiceRate.objects.filter(worker=saved, service=service).delete()
+                        continue
+                    try:
+                        rate = Decimal(raw_rate)
+                    except InvalidOperation:
+                        form.add_error(None, f"Ставка для услуги «{service.name}» должна быть числом.")
+                        break
+                    if rate < 0 or rate > 100:
+                        form.add_error(None, f"Ставка для услуги «{service.name}» должна быть от 0 до 100%.")
+                        break
+                    WorkerServiceRate.objects.update_or_create(
+                        worker=saved, service=service,
+                        defaults={"worker_percentage": rate, "active": active},
+                    )
+                else:
+                    return redirect("employees")
+            else:
+                WorkerServiceRate.objects.filter(worker=saved).delete()
+                return redirect("employees")
+    rate_rows = []
+    if obj and obj.role == User.Role.WORKER:
+        rates = {rate.service_id: rate for rate in WorkerServiceRate.objects.filter(worker=obj)}
+        rate_rows = [{"service": service, "rate": rates.get(service.pk)} for service in Service.objects.all()]
     return render(request, "accounts/employees.html", {
-        "form": form, "employee_record": obj, "telegram_link": telegram_link, "employees": User.objects.filter(is_superuser=False).order_by("username"),
+        "form": form, "employee_record": obj, "telegram_link": telegram_link,
+        "employees": User.objects.filter(is_superuser=False).order_by("username"),
+        "rate_rows": rate_rows,
+        "cities": City.objects.filter(is_active=True),
     })
 
 
@@ -344,7 +381,7 @@ def profile(request):
     if request.method != "GET":
         from django.http import HttpResponseNotAllowed
         return HttpResponseNotAllowed(["GET"])
-    from decimal import Decimal, ROUND_HALF_UP
+    from decimal import Decimal
     from apps.orders.reporting import order_breakdown, financial_summary, local_day_bounds, worker_dashboard
     from django.utils import timezone
     role = role_of(request.user)
@@ -368,7 +405,7 @@ def profile(request):
     dashboard_orders = dashboard_orders.select_related("client", "service", "employee").order_by("-created_at")
     paid = dashboard_orders.filter(status="paid", repeat_of__isnull=True)
     total = paid.aggregate(total=Sum("amount"))["total"] or Decimal("0")
-    earnings = None if request.user.percentage is None else (total * request.user.percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    earnings = Decimal("0")
     expenses_total = paid.aggregate(total=Sum("expenses"))["total"] or Decimal("0")
     if role in ("worker", "manager"):
         from apps.orders.services import payment_split

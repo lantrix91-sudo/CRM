@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -21,6 +22,7 @@ def convert_lead(pk, actor=None):
     employee = lead.employee if lead.employee_id and lead.employee.is_active and lead.employee.role == "worker" else None
     order = Order.objects.create(
         lead=lead, title=lead.title, client=lead.client, service=lead.service,
+        city=lead.city,
         appliance_type=lead.appliance_type, brand=lead.brand, comment=lead.comment,
         employee=employee, status=Order.Status.ASSIGNED if employee else Order.Status.NEW,
     )
@@ -52,12 +54,11 @@ def transition_order(pk, action, actor=None):
             raise ValidationError("Повторный ремонт выполняется бесплатно и не требует оплаты.")
         if order.amount is None or order.amount <= 0:
             raise ValidationError("Перед отметкой оплаты укажите положительную стоимость.")
-        order.worker_percentage = order.employee.percentage if order.employee else None
         order.paid_at = timezone.now()
     if action == "complete":
         order.completed_at = timezone.now()
     order.status = transitions[action][1]
-    order.save(update_fields=("status", "paid_at", "completed_at", "worker_percentage"))
+    order.save(update_fields=("status", "paid_at", "completed_at"))
     record_event(order, actor, {"start": "Мастер принял заказ и приступил", "complete": "Мастер подтвердил завершение", "pay": "Подтверждена оплата"}[action])
     return order
 
@@ -97,6 +98,26 @@ def complete_order_with_payment(pk, amount, expenses, comment, actor=None, compl
     return order
 
 
+@transaction.atomic
+def defer_order(pk, days=1, actor=None):
+    order = Order.objects.select_for_update().get(pk=pk)
+    if order.status != Order.Status.IN_PROGRESS or not order.employee_id:
+        raise ValidationError("Отложить можно только заказ в работе.")
+    if actor is None or actor.pk != order.employee_id:
+        raise ValidationError("Отложить заказ может только назначенный мастер.")
+    if days not in (1, 2):
+        raise ValidationError("Можно отложить на один или два дня.")
+    notices = TelegramNotice.objects.filter(order=order, employee=actor, active=True)
+    if not notices.exists():
+        TelegramNotice.objects.create(order=order, employee=actor)
+    reminder_at = timezone.now() + timedelta(days=days)
+    notices.update(reminder_at=reminder_at, amount_prompt_id=None, payment_step="",
+                   draft_amount=None, draft_expenses=None, draft_comment="")
+    text = f"⏳ Отложено до {timezone.localtime(reminder_at):%d.%m.%Y %H:%M}"
+    record_event(order, actor, text)
+    return text
+
+
 def record_event(order, actor, description):
     OrderEvent.objects.create(order=order, actor=actor, actor_name=(actor.get_full_name() or actor.username) if actor else "Система", description=description)
 
@@ -117,7 +138,7 @@ def assign_order(pk, employee_id, actor, reason=None, expected_notice=None):
             raise ValidationError("Выберите другого мастера.")
     elif order.status != Order.Status.NEW or order.employee_id:
         raise ValidationError("Заказ уже назначен. Обновите доску.")
-    skilled = User.objects.filter(role="worker", is_active=True, services=order.service_id)
+    skilled = User.objects.filter(role="worker", is_active=True, services=order.service_id, service_cities=order.city_id, )
     if employee_id is not None:
         skilled = skilled.filter(pk=employee_id)
     if not skilled.exists():
@@ -210,12 +231,24 @@ def repeat_repair(pk, actor):
 _UNSET = object()
 
 
+def worker_service_percentage(worker, service):
+    from apps.accounts.models import WorkerServiceRate
+    if not worker or not service:
+        return None
+    return WorkerServiceRate.objects.filter(
+        worker=worker, service=service, active=True,
+    ).values_list("worker_percentage", flat=True).first()
+
+
 def payment_split(order, amount=None, expenses=None, worker_percentage=_UNSET):
     from decimal import Decimal, ROUND_HALF_UP
     net = (amount if amount is not None else (order.amount or Decimal("0"))) - (
         expenses if expenses is not None else order.expenses
     )
-    percentage = order.worker_percentage if worker_percentage is _UNSET else worker_percentage
+    if worker_percentage is _UNSET:
+        percentage = worker_service_percentage(order.employee, order.service)
+    else:
+        percentage = worker_percentage
     if percentage is None:
         return net, None, None
     worker_amount = (net * percentage / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

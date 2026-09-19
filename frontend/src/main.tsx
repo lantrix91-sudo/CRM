@@ -8,15 +8,16 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [city, setCity] = useState<number | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [workers, setWorkers] = useState<Record<string, string>>({});
-  async function reload() {
+  async function reload(selectedCity = city) {
     setBusy(true);
-    try { setBoard(await getBoard()); setError(""); }
+    try { setBoard(await getBoard(selectedCity ?? undefined)); setError(""); }
     catch (e) { setError(e instanceof Error ? e.message : "Не удалось загрузить доску"); }
     finally { setBusy(false); }
   }
-  useEffect(() => { void reload(); }, []);
+  useEffect(() => { void reload(); }, [city]);
   useEffect(() => {
     const refresh = () => { if (!document.hidden && !busy) void reload(); };
     const timer = window.setInterval(refresh, 15000);
@@ -45,13 +46,14 @@ function App() {
   ) ?? [];
   return <><header className="topbar"><a className="brand" href="/"><span className="logo">C</span> CRM</a><nav><a href="/operator/">Обращения и заказы</a><a href="/calls/">Звонки</a><a href="/profile/">Личный кабинет</a></nav></header>
     <main><div className="page-title"><div><p className="eyebrow">КЛИЕНТЫ И ЗАКАЗЫ</p><h1>Доска работы</h1><p className="subtitle">От обращения до оплаты — вся работа на одной доске.</p></div>{board?.can_add && <a className="button primary" href="/workspace/lead/new/">+ Новый лид</a>}</div>
+    <div className="city-filter" aria-label="Фильтр по городу"><button className={city === null ? "city-tab active" : "city-tab"} onClick={() => setCity(null)}>Все <span>{board?.leads.length ?? 0}</span></button>{board?.cities.map(item => <button key={item.id} className={city === item.id ? "city-tab active" : "city-tab"} onClick={() => setCity(item.id)}>{item.name} <span>{item.count}</span></button>)}</div>
     <div className="toolbar"><label className="search">Поиск по доске<input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Клиент, телефон, услуга или мастер" /></label><span>{cards.length} карточек</span><button className="button secondary" disabled={busy} onClick={() => void reload()}>Обновить</button></div>
     <p className="feedback" aria-live="polite">{busy ? "Обновляем…" : "Статусы меняются по действиям: согласие клиента → назначение мастера → завершение → оплата. Автообновление каждые 15 секунд."}</p>
     {error && <div className="error" role="alert">{error}</div>}
     <div className="board" aria-label="Канбан" aria-busy={busy}>{board?.columns.map(column => <section key={column.id} className={`column column-${column.id}`} data-status={column.id} aria-label={column.label}>
       <div className="column-heading"><span className="dot"/><h2>{column.label}</h2><span className="count">{cards.filter(c => c.status === column.id).length}</span></div>
       <div className="column-body">{cards.filter(c => c.status === column.id).map(card => <article className={`lead-card ${card.repeat_of_id ? "repeat-repair-card" : ""} ${card.overdue ? "waiting-overdue" : ""}`} key={card.key} data-card-key={card.key}>
-        <div className="card-meta">{card.kind === "lead" ? "ЛИД" : "ЗАКАЗ"} № {card.id}</div>{card.repeat_of_id && <div className="repeat-repair-badge">Повторка · заказ № {card.repeat_of_id}</div>}<h3>{card.client_name}</h3><div className={`client-badge ${card.client_previous_count > 0 ? "client-returning" : "client-new"}`}>{card.client_previous_count > 0 ? `Повторный клиент · ранее обращений: ${card.client_previous_count}` : "Первое обращение"}</div><p className="phone">☎ {card.phone}</p><div className="service"><p>{card.service_name}</p></div><p>{card.title}</p><p className="source">Источник: {card.source || "Не указан"}</p><div className="assignee">Мастер: {card.employee_id !== null ? <span className={`worker-load worker-load-${card.employee_active_count >= 5 ? "red" : card.employee_active_count >= 3 ? "yellow" : "green"}`} title="Количество незакрытых заявок мастера">{card.employee_name} · Активных: {card.employee_active_count}</span> : "Не назначен"}</div><p>{card.detail}</p>{card.delivery && <p className="delivery-status">{card.delivery}</p>}{card.waiting_minutes != null && <p>Ожидает мастера: {card.waiting_minutes} мин.{card.overdue && " · Требует внимания"}</p>}
+        <div className="card-meta">{card.kind === "lead" ? "ЛИД" : "ЗАКАЗ"} № {card.id}</div>{card.repeat_of_id && <div className="repeat-repair-badge">Повторка · заказ № {card.repeat_of_id}</div>}<h3>{card.client_name}</h3>{card.scheduled_at && <div className="appointment-badge">Запись: {new Date(card.scheduled_at).toLocaleString("ru-RU", {timeZone: "Asia/Qyzylorda", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"})}</div>}<div className="card-badges"><span className="city-badge">{card.city_name}</span><div className={`client-badge ${card.client_previous_count > 0 ? "client-returning" : "client-new"}`}>{card.client_previous_count > 0 ? `Повторный клиент · ранее обращений: ${card.client_previous_count}` : "Первое обращение"}</div></div><p className="phone">☎ {card.phone}</p><div className="service"><p>{card.service_name}</p></div><p>{card.title}</p><p className="source">Источник: {card.source || "Не указан"}</p><div className="assignee">Мастер: {card.employee_id !== null ? <span className={`worker-load worker-load-${card.employee_active_count >= 5 ? "red" : card.employee_active_count >= 3 ? "yellow" : "green"}`} title="Количество незакрытых заявок мастера">{card.employee_name} · Активных: {card.employee_active_count}</span> : "Не назначен"}</div><p>{card.detail}</p>{card.delivery && <p className="delivery-status">{card.delivery}</p>}{card.waiting_minutes != null && <p>Ожидает мастера: {card.waiting_minutes} мин.{card.overdue && " · Требует внимания"}</p>}
         <div className="card-actions">{board.can_change && card.kind === "lead" && card.status !== "lost" && <form method="post" action={`/workspace/lead/${card.id}/`}>
           <input type="hidden" name="csrfmiddlewaretoken" value={document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? ""}/><input type="hidden" name="action" value="convert"/><input type="hidden" name="return_to" value="kanban"/>
           <button className="button primary" disabled={busy}>Клиент согласился</button></form>}

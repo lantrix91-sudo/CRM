@@ -139,3 +139,5 @@ if os.environ.get("DJANGO_PRODUCTION", "").lower() == "true":
     CACHES = {"default": {"BACKEND": "django.core.cache.backends.db.DatabaseCache", "LOCATION": "crm_cache"}}
     LOGGING["loggers"]["crm.telegram"]["handlers"] = ["telegram_console"]
     LOGGING["handlers"].pop("telegram_file", None)
+
+APPOINTMENT_REMINDER_MINUTES = 60
