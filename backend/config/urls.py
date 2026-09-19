@@ -28,6 +28,7 @@ urlpatterns = [
     path("api/telephony/incoming/", IncomingCallAPI.as_view()),
     path("calls/<int:pk>/resolve/", accounts.resolve_call, name="resolve-call"),
     path("calls/", reports.calls, name="calls"),
+    path("clients/", accounts.clients, name="clients"),
     path("clients/<int:pk>/history/", reports.history, name="client-history"),
     path("analytics/", reports.analytics, name="analytics"),
     path("login/", LoginView.as_view(template_name="accounts/login.html"), name="login"),

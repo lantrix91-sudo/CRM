@@ -1,0 +1,6 @@
+{% if user.role == 'manager' or user.role == 'operator' or user.is_superuser %}
+{% if request.path == '/operator/' or '/orders/' in request.path or '/calls/' in request.path or '/workspace/lead/' in request.path or '/leads/' in request.path %}
+<nav class="section-tabs" aria-label="Разделы заказов"><a href="/kanban/">Доска</a><a href="/operator/" {% if request.path == '/operator/' or '/orders/' in request.path or '/workspace/lead/' in request.path or '/leads/' in request.path %}aria-current="page"{% endif %}>Список</a><a href="/calls/" {% if '/calls/' in request.path %}aria-current="page"{% endif %}>Входящие звонки</a></nav>
+{% elif request.path == '/profile/' or request.path == '/manager/' or request.path == '/analytics/' or '/workspace/service/' in request.path %}
+<nav class="section-tabs" aria-label="Разделы главной"><a href="/profile/" {% if request.path == '/profile/' %}aria-current="page"{% endif %}>Сводка</a>{% if user.role == 'manager' or user.is_superuser %}<a href="/manager/" {% if request.path == '/manager/' or '/workspace/service/' in request.path %}aria-current="page"{% endif %}>Команда и услуги</a>{% endif %}{% if perms.leads.view_analytics %}<a href="/analytics/" {% if request.path == '/analytics/' %}aria-current="page"{% endif %}>Источники</a>{% endif %}</nav>
+{% endif %}{% endif %}

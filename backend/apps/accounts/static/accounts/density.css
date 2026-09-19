@@ -1,0 +1,17 @@
+/* Shared sizing for server-rendered pages and the React order board. */
+:root{--crm-font:"Segoe UI",system-ui,-apple-system,sans-serif;--crm-text:13px;--crm-small:12px;--crm-title:28px;--crm-radius:8px;--crm-sidebar:210px}
+body,input,select,textarea,button{font-family:var(--crm-font)}body{font-size:var(--crm-text);line-height:1.5}
+.sidebar,.kanban-sidebar{width:var(--crm-sidebar);padding:28px 16px}.workspace{margin-left:var(--crm-sidebar)}
+.sidebar .workspace-nav a,.kanban-sidebar nav a{font-size:13px;line-height:20px;min-height:44px;padding:12px 14px;border-radius:6px;margin:0}.sidebar .workspace-nav,.kanban-sidebar nav{gap:7px}
+.workspace main,main.kanban-workspace{padding:24px;max-width:none}.workspace-header{height:60px;padding:0 24px}
+.workspace h1,.kanban-workspace h1{font-size:var(--crm-title);font-weight:600;line-height:1.25;letter-spacing:-.6px;margin:0 0 8px}
+.page-heading,.kanban-workspace .page-title{margin:0 0 24px;gap:16px}.page-heading p,.kanban-workspace .subtitle{font-size:13px;line-height:1.5;margin:6px 0 0}.eyebrow,.page-heading .eyebrow{font-size:10px;letter-spacing:1.5px;margin:0 0 8px}
+.workspace .section-tabs,.kanban-workspace .section-tabs{margin-bottom:20px;border-radius:var(--crm-radius);padding:4px;gap:4px}.section-tabs a{font-size:13px;line-height:20px;padding:8px 14px;border-radius:6px}
+.workspace button,.workspace .button,.kanban-workspace .button{font-size:13px;line-height:20px;min-height:40px;padding:9px 14px;border-radius:6px}
+.workspace input,.workspace select,.kanban-workspace input,.kanban-workspace select{font-size:13px;line-height:20px;min-height:40px;padding:9px 12px;border-radius:6px}
+.workspace .directory-search,.kanban-workspace .toolbar{padding:14px 16px;border-radius:var(--crm-radius);gap:12px;margin:16px 0}.directory-search label,.kanban-workspace .search{font-size:12px}
+.workspace .scroll{border-radius:var(--crm-radius)}.workspace .scroll th{font-size:12px;line-height:18px;padding:12px 16px}.workspace .scroll td{font-size:13px;line-height:20px;padding:14px 16px}.workspace .scroll td a{font-size:13px;font-weight:600}
+.workspace .card,.workspace .order-card{border-radius:var(--crm-radius);padding:18px}.workspace .order-card h3,.kanban-workspace .lead-card h3{font-size:15px;line-height:20px;font-weight:600;letter-spacing:0}
+.kanban-workspace .lead-card{padding:12px;border-radius:var(--crm-radius)}.kanban-workspace .card-meta{font-size:11px;line-height:16px}.kanban-workspace .phone,.kanban-workspace .service p,.kanban-workspace .assignee,.kanban-workspace .lead-card>p,.card-expand>p{font-size:12px;line-height:18px}
+.workspace .badge,.kanban-workspace .city-badge,.kanban-workspace .client-badge,.kanban-workspace .appointment-badge,.kanban-workspace .repeat-repair-badge{font-size:11px;line-height:16px;padding:3px 6px;border-radius:5px}.card-expand>summary{font-size:12px;line-height:24px}
+@media(max-width:800px){.sidebar,.kanban-sidebar{position:static;width:auto;padding:16px;min-height:0}.sidebar .nav-caption,.sidebar-bottom{display:none}.sidebar nav{display:flex;flex-direction:row;overflow-x:auto;margin-top:16px;flex-wrap:nowrap}.sidebar .workspace-nav a,.kanban-sidebar nav a{flex-shrink:0;white-space:nowrap;font-size:12px;padding:10px 12px}.workspace{margin-left:0}.workspace main,main.kanban-workspace{margin-left:0;padding:18px 16px}.workspace h1,.kanban-workspace h1{font-size:25px}.workspace .directory-search,.kanban-workspace .toolbar{padding:12px}.workspace .card,.workspace .order-card{padding:16px}}

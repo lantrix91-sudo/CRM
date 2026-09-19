@@ -5,11 +5,11 @@
   <header class="profile-hero">
     <div>
       <p class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</p>
-      <h1>Личный кабинет</h1>
+      <h1>Главная</h1>
       <p class="profile-subtitle"><strong>{{ user.get_full_name|default:user.username }}</strong><span>·</span>{% if user.is_superuser %}Руководитель{% else %}{{ user.get_role_display }}{% endif %}</p>
     </div>
     <div class="profile-actions">
-      {% if user.role == 'manager' or user.is_superuser %}<a class="button secondary" href="{% url 'employees' %}">Управление процентами</a>{% elif user.role == 'worker' %}<a class="button secondary" href="{% url 'worker-home' %}">Мои заказы</a>{% elif user.role == 'operator' %}<a class="button secondary" href="{% url 'operator-home' %}">Клиенты и заказы</a>{% endif %}
+      {% if user.role == 'manager' or user.is_superuser %}<a class="button secondary" href="{% url 'employees' %}">Управление процентами</a>{% elif user.role == 'worker' %}<a class="button secondary" href="{% url 'worker-home' %}">Мои заказы</a>{% elif user.role == 'operator' %}<a class="button secondary" href="{% url 'operator-home' %}">Заказы</a>{% endif %}
     </div>
   </header>
 

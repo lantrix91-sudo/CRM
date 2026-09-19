@@ -33,3 +33,11 @@ main{max-width:1920px}
 .lead-card.repeat-repair-card{border:2px solid #a78bfa;background:#f5f3ff}.repeat-repair-badge{display:inline-block;margin:8px 0;padding:4px 8px;border-radius:6px;background:#ede9fe;color:#5b21b6;font-size:12px;font-weight:700}
 
 .appointment-badge { display: inline-block; padding: 4px 8px; margin: 4px 0; border: 1px solid #b6dfc8; border-radius: 8px; background: #eef9f1; color: #236b43; font-size: 12px; font-weight: 600; }
+
+.section-tabs { display:flex; align-items:center; gap:8px; overflow-x:auto; flex-wrap:nowrap; margin:0 0 24px; padding:4px 0 10px; }
+.section-tabs a { display:block; flex-shrink:0; padding:9px 14px; border:1px solid #dce7e1; border-radius:9px; color:#52675c; background:#fff; font-size:13px; white-space:nowrap; text-decoration:none; }
+.section-tabs a[aria-current="page"] { color:#205f4e; background:#e8f3ed; border-color:#a8ceba; font-weight:650; }
+.directory-search { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin:20px 0; }
+.directory-search input { flex:1; min-width:180px; max-width:480px; }
+.topbar nav a[aria-current="page"] { color:#256654; font-weight:700; }
+@media(max-width:600px) { .section-tabs { gap:6px; } .section-tabs a { padding:8px 11px; } }

@@ -20,7 +20,7 @@ def home(request):
     role = role_of(request.user)
     if role not in ("manager", "operator", "worker", "curator"):
         return render(request, "accounts/unassigned.html", status=403)
-    return redirect({"manager": "manager-home", "operator": "operator-home", "worker": "worker-home", "curator": "profile"}[role])
+    return redirect({"manager": "profile", "operator": "kanban", "worker": "worker-home", "curator": "profile"}[role])
 
 @roles_required("manager")
 def manager_home(request):
@@ -43,6 +43,18 @@ def operator_home(request):
         "leads": Lead.objects.exclude(status__in=("converted", "lost")).select_related("client", "service").order_by("-created_at")[:100],
         "orders": Order.objects.select_related("client", "employee").order_by("-created_at")[:100],
     })
+
+@roles_required("manager", "operator")
+def clients(request):
+    from django.core.paginator import Paginator
+    from apps.customers.models import Client
+    query = request.GET.get("q", "").strip()
+    customers = Client.objects.all()
+    if query:
+        customers = customers.filter(Q(name__icontains=query) | Q(phone__icontains=query) | Q(normalized_phone__icontains=query))
+    customers = customers.annotate(lead_count=Count("leads", distinct=True), order_count=Count("orders", distinct=True)).order_by("name", "pk")
+    return render(request, "accounts/clients.html", {"page_obj": Paginator(customers, 25).get_page(request.GET.get("page")), "query": query})
+
 
 @roles_required("worker")
 def worker_home(request):
@@ -270,7 +282,7 @@ def edit_record(request, kind, pk=None):
         form.instance._history_actor = request.user
         if request.method == "POST" and form.is_valid():
             form.save()
-            return redirect("operator-home")
+            return redirect("clients" if kind == "client" else "manager-home" if kind == "service" else "operator-home")
     return render(request, "accounts/form.html", {"form": form, "kind": kind, "record": obj})
 
 @roles_required("manager")
