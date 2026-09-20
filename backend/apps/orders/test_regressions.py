@@ -1,3 +1,4 @@
+from apps.orders.test_helpers import create_order_with_rate
 from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
@@ -7,8 +8,8 @@ from django.test import TestCase
 from django.utils import timezone
 from openpyxl import load_workbook
 
-from apps.accounts.models import User
-from apps.customers.models import Client
+from apps.accounts.models import User, WorkerServiceRate
+from apps.customers.models import Client, City
 from apps.leads.models import TelegramNotice
 from apps.services.models import Service
 from .models import Order, WorkerTransfer
@@ -18,25 +19,27 @@ from .services import cancel_order
 class RegressionTests(TestCase):
     def setUp(self):
         self.manager = User.objects.create_user(username="manager", role="manager")
-        self.worker = User.objects.create_user(username="worker", role="worker", percentage=40, is_available=True)
+        self.worker = User.objects.create_user(username="worker", role="worker", is_available=True)
         self.service = Service.objects.create(name="Repair")
+        self.rate = WorkerServiceRate.objects.create(worker=self.worker, service=self.service, worker_percentage=40)
+        self.city = City.objects.create(name="Regression city")
+        self.worker.service_cities.add(self.city)
         self.worker.services.add(self.service)
         self.order = Order.objects.create(
             title="Repair", client=Client.objects.create(name="Client", phone="+77001234567"),
-            service=self.service, amount=1000,
+            service=self.service, city=self.city, amount=1000,
         )
         self.client.force_login(self.manager)
 
     def save_order(self, **changes):
         data = dict(action="save", title="Updated", client=self.order.client_id,
-                    service=self.service.pk, employee=self.worker.pk, amount="1000")
+                    service=self.service.pk, city=self.city.pk, employee=self.worker.pk, amount="1000")
         data.update(changes)
         return self.client.post(f"/orders/{self.order.pk}/", data)
 
     def paid_order(self):
         self.order.employee = self.worker
         self.order.status = "paid"
-        self.order.worker_percentage = 40
         self.order.paid_at = timezone.now()
         self.order.save()
 
@@ -110,7 +113,7 @@ class RegressionTests(TestCase):
 
     def test_missing_percentage_returns_400_including_opening_balance(self):
         self.paid_order()
-        self.order.worker_percentage = None
+        self.rate.delete()
         self.order.paid_at = timezone.now() - timedelta(days=2)
         self.order.save()
         self.assertEqual(self.export().status_code, 400)
@@ -144,11 +147,11 @@ class RegressionTests(TestCase):
 
     def test_profile_history_filters_orders_and_keeps_worker_scope(self):
         self.paid_order()
-        older = Order.objects.create(title="Old", client=self.order.client, service=self.service,
+        older = create_order_with_rate(title="Old", client=self.order.client, service=self.service,
             employee=self.worker, status="paid", amount=200, worker_percentage=40,
             paid_at=timezone.now() - timedelta(days=2))
         other = User.objects.create_user(username="other_history", role="worker")
-        private = Order.objects.create(title="Private", client=self.order.client, service=self.service,
+        private = create_order_with_rate(title="Private", client=self.order.client, service=self.service,
             employee=other, status="paid", amount=300, worker_percentage=40, paid_at=timezone.now())
         self.client.force_login(self.worker)
         today = self.client.get("/profile/?history=today")
@@ -157,10 +160,10 @@ class RegressionTests(TestCase):
         history = self.client.get(f"/profile/?history=earnings&worker={other.pk}")
         self.assertEqual({o.pk for o in history.context["orders"]}, {self.order.pk, older.pk})
         self.assertNotIn(private.pk, [o.pk for o in history.context["orders"]])
-        self.assertContains(history, f'/orders/{self.order.pk}/#order-history')
+        self.assertContains(history, f'/orders/{self.order.pk}/')
         Order.objects.bulk_create([Order(title=f"Extra {i}", client=self.order.client,
             service=self.service, employee=self.worker, status="paid", amount=100,
-            worker_percentage=40, paid_at=timezone.now()) for i in range(21)])
+            paid_at=timezone.now()) for i in range(21)])
         page = self.client.get("/profile/?history=earnings&page=2")
         self.assertEqual(page.context["page_obj"].number, 2)
         self.assertEqual(len(page.context["orders"]), 3)

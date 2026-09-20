@@ -2,7 +2,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.test import TestCase, Client as Browser
-from apps.customers.models import Client
+from apps.customers.models import Client, City
 from apps.services.models import Service
 from apps.orders.models import Order
 
@@ -22,7 +22,7 @@ class RoleTests(TestCase):
         self.client.force_login(user)
 
     def test_role_redirects_without_staff(self):
-        for user, url in [(self.manager, "/manager/"), (self.operator, "/operator/"), (self.worker, "/my-orders/")]:
+        for user, url in [(self.manager, "/profile/"), (self.operator, "/kanban/"), (self.worker, "/my-orders/")]:
             self.login(user)
             self.assertRedirects(self.client.get("/"), url)
 
@@ -104,6 +104,7 @@ class RoleTests(TestCase):
         response = self.client.post("/workspace/lead/new/", {
             "client_name": "Created by operator", "client_phone": "+77001234567",
             "service": self.order.service_id, "source": "Телефон",
+            "city": City.objects.create(name="Role test city").pk,
         })
         self.assertRedirects(response, "/operator/")
         self.assertTrue(Lead.objects.filter(title="Created by operator").exists())

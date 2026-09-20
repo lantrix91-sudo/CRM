@@ -1,10 +1,11 @@
+from apps.orders.test_helpers import create_order_with_rate
 from decimal import Decimal
 import uuid
 from datetime import timedelta
 from openpyxl import load_workbook
 from django.test import TestCase
 from django.core.exceptions import ValidationError, PermissionDenied
-from apps.accounts.models import User
+from apps.accounts.models import User, WorkerServiceRate
 from apps.customers.models import Client
 from apps.services.models import Service
 from .models import Order, WorkerTransfer, SettlementShift
@@ -14,8 +15,8 @@ from .reporting import export_rows
 class SettlementTests(TestCase):
     def setUp(self):
         self.manager = User.objects.create_user(username="manager", role="manager")
-        self.worker = User.objects.create_user(username="worker", role="worker", percentage=40)
-        self.order = Order.objects.create(title="Repair", client=Client.objects.create(name="Client", phone="123"),
+        self.worker = User.objects.create_user(username="worker", role="worker")
+        self.order = create_order_with_rate(title="Repair", client=Client.objects.create(name="Client", phone="123"),
             service=Service.objects.create(name="Repair"), employee=self.worker, status="paid", amount=20000, expenses=2000, worker_percentage=40)
 
     def test_partial_transfer_close_and_carry(self):
@@ -51,7 +52,7 @@ class SettlementTests(TestCase):
         settle(self.worker.pk, self.manager, "transfer", Decimal("4300"), request_id=uuid.uuid4())
         settle(self.worker.pk, self.manager, "close")
 
-        new_order = Order.objects.create(
+        new_order = create_order_with_rate(
             title="New repair", client=self.order.client, service=self.order.service,
             employee=self.worker, status="paid", amount=15000, worker_percentage=40,
         )
@@ -87,8 +88,8 @@ class SettlementTests(TestCase):
         self.assertEqual(detail.status_code, 200)
         self.assertContains(detail, f"Закрытая смена № {shift.pk}")
         self.assertContains(detail, "Доля компании: 10800,00 KZT")
-        self.worker.percentage = 80
-        self.worker.save(update_fields=("percentage",))
+        WorkerServiceRate.objects.create(worker=self.worker,
+            service=Service.objects.create(name="Other rate"), worker_percentage=80)
         self.assertContains(self.client.get(f"/settlements/shifts/{shift.pk}/"), "Процент мастера: 40,00")
 
         export = self.client.get("/settlements/export/")
@@ -115,17 +116,17 @@ class SettlementTests(TestCase):
             created_at=now - timedelta(days=2)
         )
         client = self.order.client
-        service = self.order.service
-        order_72 = Order.objects.create(
+        service = Service.objects.create(name="Company-only service")
+        order_72 = create_order_with_rate(
             title="Order 72", client=client, service=service, employee=self.worker,
             status="paid", amount=10000, worker_percentage=0, paid_at=now,
         )
-        order_73 = Order.objects.create(
+        order_73 = create_order_with_rate(
             title="Order 73", client=client, service=service, employee=self.worker,
             status="paid", amount=7500, worker_percentage=0, paid_at=now + timedelta(minutes=2),
         )
-        order_74 = Order.objects.create(
-            title="Order 74", client=client, service=service, employee=self.worker,
+        order_74 = create_order_with_rate(
+            title="Order 74", client=client, service=Service.objects.create(name="Shared service"), employee=self.worker,
             status="paid", amount=5000, expenses=2000, worker_percentage=50,
             paid_at=now + timedelta(minutes=4),
         )
@@ -213,8 +214,7 @@ class SettlementTests(TestCase):
         self.client.force_login(self.manager)
         self.assertEqual(self.client.post(f"/settlements/{self.worker.pk}/", {"action":"transfer", "amount":"8000", "request_id":str(uuid.uuid4())}).status_code, 302)
         self.assertEqual(totals(self.worker)["balance"], 2800)
-        self.order.worker_percentage = None
-        self.order.save()
+        self.worker.service_rates.filter(service=self.order.service).delete()
         with self.assertRaises(ValidationError):
             settle(self.worker.pk, self.manager, "close")
 

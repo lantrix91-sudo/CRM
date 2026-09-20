@@ -8,8 +8,10 @@ from apps.accounts import views as accounts
 from django.contrib.auth.views import LoginView, LogoutView
 from apps.leads.telephony import IncomingCallAPI
 from apps.leads import reports
+from config.health import health
 
 urlpatterns = [
+    path("health/", health, name="health"),
     path("api/mobile/", include("apps.accounts.mobile_urls")),
     path("settlements/", accounts.settlements, name="settlements"),
     path("settlements/<int:pk>/", accounts.settlements, name="worker-settlement"),

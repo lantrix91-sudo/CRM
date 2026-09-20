@@ -143,7 +143,8 @@ def assign_order(pk, employee_id, actor, reason=None, expected_notice=None):
         skilled = skilled.filter(pk=employee_id)
     if not skilled.exists():
         raise ValidationError(f'Нет активного мастера с услугой «{order.service.name}». Руководителю нужно указать эту услугу у подходящего сотрудника в разделе «Сотрудники».')
-    workers = list(skilled.select_for_update().filter(is_available=True).order_by("pk"))
+    # Lock workers only: a legacy order without a city introduces an outer join.
+    workers = list(skilled.select_for_update(of=("self",)).filter(is_available=True).order_by("pk"))
     if not workers:
         raise ValidationError(f'Мастера с услугой «{order.service.name}» сейчас недоступны. Проверьте доступность в разделе «Сотрудники».')
     candidates = []

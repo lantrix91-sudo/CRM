@@ -1,7 +1,9 @@
 """Create the first administrator only when explicitly provisioned."""
 import os
 import sys
-sys.path.insert(0, "/app/backend")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 import django
 django.setup()

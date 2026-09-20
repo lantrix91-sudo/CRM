@@ -1,0 +1,76 @@
+name: Verify CRM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: crm_ci
+          POSTGRES_USER: crm
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crm -d crm_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DJANGO_SECRET_KEY: ci-only-django-key-never-use-in-production-0123456789abcdef
+      DJANGO_DEBUG: "false"
+      DJANGO_PRODUCTION: "false"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      POSTGRES_DB: crm_ci
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: ci-only-password
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      TELEGRAM_BOT_TOKEN: ""
+      CRM_BOOTSTRAP_PASSWORD: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements-deploy.txt
+      - name: Build frontend
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+      - name: Check Django and migrations
+        run: |
+          python backend/manage.py check
+          python backend/manage.py makemigrations --check --dry-run
+      - name: Test backend on PostgreSQL
+        working-directory: backend
+        run: python manage.py test apps config --noinput
+      - name: Check production settings and static files
+        env:
+          DJANGO_PRODUCTION: "true"
+          DJANGO_ALLOWED_HOSTS: crm-production-1469.up.railway.app
+        run: |
+          python backend/manage.py check --deploy --fail-level ERROR
+          python backend/manage.py collectstatic --noinput
+      - name: Validate deployment scripts
+        run: |
+          sh -n deploy/pre-deploy.sh
+          sh -n deploy/start-web.sh
+      - name: Build deployment image
+        run: docker build --tag crm:ci .

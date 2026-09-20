@@ -12,6 +12,11 @@ staticfiles/
 media/
 .vscode/
 .idea/
+backups/
+*.sqlite3
+*.sqlite3-*
+*.dump
+*.log.*
 
 
 node_modules/

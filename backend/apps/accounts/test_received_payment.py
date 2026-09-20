@@ -1,5 +1,6 @@
+from apps.orders.test_helpers import create_order_with_rate
 from django.test import TestCase, Client as Browser
-from apps.accounts.models import User
+from apps.accounts.models import User, WorkerServiceRate
 from apps.customers.models import Client
 from apps.services.models import Service
 from apps.orders.models import Order
@@ -38,8 +39,7 @@ class ReceivedPaymentTests(TestCase):
     def test_web_completion_uses_payment_and_expense_sequence(self):
         self.order.status = "in_progress"
         self.order.amount = None
-        self.worker.percentage = 50
-        self.worker.save(update_fields=("percentage",))
+        rate = WorkerServiceRate.objects.create(worker=self.worker, service=self.order.service, worker_percentage=50)
         self.order.save(update_fields=("status", "amount"))
         preview = self.client.post(self.url, {
             "action": "preview_completion",
@@ -73,7 +73,7 @@ class ReceivedPaymentTests(TestCase):
         self.assertEqual(self.order.amount, 150)
         self.assertEqual(self.order.expenses, 30)
         self.assertEqual(self.order.received_amount, 150)
-        self.assertEqual(self.order.worker_percentage, self.worker.percentage)
+        self.assertEqual(self.order.worker_percentage, rate.worker_percentage)
         self.assertEqual(self.order.work_comment, "Заменил насос")
         self.assertEqual(self.order.events.count(), 3)
         duplicate = self.client.post(self.url, {"action": "confirm_completion"})
@@ -97,7 +97,7 @@ class ReceivedPaymentTests(TestCase):
         self.assertIsNone(self.order.paid_at)
 
     def test_free_repeat_is_completed_without_payment_or_awaiting_label(self):
-        original = Order.objects.create(
+        original = create_order_with_rate(
             title="Original repair",
             client=self.order.client,
             service=self.order.service,

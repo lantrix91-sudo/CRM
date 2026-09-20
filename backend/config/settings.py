@@ -13,7 +13,7 @@ def required_env(name):
                "POSTGRES_PASSWORD": "PGPASSWORD", "POSTGRES_HOST": "PGHOST", "POSTGRES_PORT": "PGPORT"}
     value = os.environ.get(name) or os.environ.get(aliases.get(name, name))
     if not value:
-        raise ImproperlyConfigured(f"Set {name} in the project root .env file.")
+        raise ImproperlyConfigured(f"Set {name} in the environment or the project root .env file.")
     return value
 
 
@@ -126,8 +126,12 @@ if os.environ.get("DJANGO_PRODUCTION", "").lower() == "true":
     if not ALLOWED_HOSTS:
         raise ImproperlyConfigured("Set DJANGO_ALLOWED_HOSTS to the public Railway domain.")
     CSRF_TRUSTED_ORIGINS = ["https://" + host for host in ALLOWED_HOSTS]
+    # Railway probes this host over HTTP before routing public traffic.
+    if "healthcheck.railway.app" not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append("healthcheck.railway.app")
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SECURE_SSL_REDIRECT = True
+    SECURE_REDIRECT_EXEMPT = [r"^health/$"]
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = 3600

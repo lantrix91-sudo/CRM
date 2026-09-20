@@ -1,6 +1,7 @@
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db.models import Q, Sum
 from django.utils import timezone
 
@@ -125,6 +126,15 @@ def parse_export_date(value):
         return None
 
 
+def export_order_breakdown(order):
+    breakdown = order_breakdown(order)
+    if breakdown["company_amount"] is None:
+        raise ValidationError(
+            f"Укажите ставку мастера по услуге для заказа № {order.pk} перед экспортом."
+        )
+    return breakdown
+
+
 def export_rows(worker, date_from=None, date_to=None):
     start = local_day_bounds(date_from)[0] if date_from else None
     end = local_day_bounds(date_to)[1] if date_to else None
@@ -152,7 +162,7 @@ def export_rows(worker, date_from=None, date_to=None):
             "comment": "Долг до начала выбранного периода",
         })
     for order in orders:
-        breakdown = order_breakdown(order)
+        breakdown = export_order_breakdown(order)
         rows.append({
             "date": order.paid_at or order.created_at,
             "order_number": order.pk,
@@ -200,14 +210,14 @@ def export_opening_balance(worker, start):
             worker, latest_shift.closed_at, start, legacy_fallback=True,
         ).filter(settlement_shift__isnull=True)
         balance += sum(
-            (order_breakdown(order)["company_amount"] or Decimal("0") for order in pre_shift_orders),
+            (export_order_breakdown(order)["company_amount"] for order in pre_shift_orders),
             Decimal("0"),
         )
         return max(balance - transfers, Decimal("0"))
 
     orders = paid_orders(worker, end=start, legacy_fallback=True)
     company_total = sum(
-        (order_breakdown(order)["company_amount"] or Decimal("0") for order in orders),
+        (export_order_breakdown(order)["company_amount"] for order in orders),
         Decimal("0"),
     )
     transfers = WorkerTransfer.objects.filter(

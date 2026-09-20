@@ -1,3 +1,4 @@
+from apps.accounts.models import WorkerServiceRate
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -17,10 +18,11 @@ from .services import convert_lead, transition_order
 class OrderWorkflowTests(TestCase):
     def setUp(self):
         self.employee = get_user_model().objects.create_user(
-            username="master", is_staff=False, role="worker", telegram_chat_id=9988, percentage=30,
+            username="master", is_staff=False, role="worker", telegram_chat_id=9988,
         )
         self.customer = Client.objects.create(name="Client", phone="+77000000000")
         self.service = Service.objects.create(name="Repair")
+        self.rate = WorkerServiceRate.objects.create(worker=self.employee, service=self.service, worker_percentage=30)
         self.lead = Lead.objects.create(title="Repair", client=self.customer, service=self.service, employee=self.employee)
 
     def test_conversion_is_idempotent(self):
@@ -331,7 +333,7 @@ class OrderWorkflowTests(TestCase):
         self.assertFalse(any(c.args[0] == "sendMessage" for c in api.call.call_args_list))
         self.assertEqual(api.call.call_args.kwargs["reply_markup"], {"inline_keyboard": []})
 
-    def test_expenses_split_and_percentage_snapshot(self):
+    def test_expenses_split_uses_rate_for_order_service(self):
         from apps.leads.telegram import apply_amount_message
         from apps.orders.services import payment_split
         order, notice = self.accepted_notice()
@@ -347,8 +349,8 @@ class OrderWorkflowTests(TestCase):
         self.assertEqual(order.expenses, 2000)
         self.assertEqual(order.work_comment, "Replaced pump")
         self.assertEqual(payment_split(order), (Decimal("18000"), Decimal("5400"), Decimal("12600")))
-        self.employee.percentage = 70
-        self.employee.save()
+        WorkerServiceRate.objects.create(worker=self.employee,
+            service=Service.objects.create(name="Other rate"), worker_percentage=70)
         self.assertEqual(payment_split(order)[1], Decimal("5400"))
 
     def test_payment_asks_three_separate_questions(self):
@@ -390,8 +392,7 @@ class OrderWorkflowTests(TestCase):
 
     def test_payment_without_percentage_cleans_up_questions(self):
         from apps.leads.telegram import process_update
-        self.employee.percentage = None
-        self.employee.save()
+        self.rate.delete()
         order, notice = self.accepted_notice()
         api = Mock()
         api.call.return_value = {"message_id": 55}

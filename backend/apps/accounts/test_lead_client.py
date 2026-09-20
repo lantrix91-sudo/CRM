@@ -1,13 +1,14 @@
 from django.test import TestCase
 from apps.accounts.forms import LeadForm
-from apps.customers.models import Client
+from apps.customers.models import Client, City
 from apps.leads.models import Lead
 from apps.services.models import Service
 
 class LeadClientTests(TestCase):
     def setUp(self):
         self.service=Service.objects.create(name="Repair")
-        self.data={"title":"Repair","service":self.service.pk,"source":"OLX","client_name":"Ivan","client_phone":"+77001234567","client_address":"Street 1"}
+        self.city=City.objects.create(name="Lead test city")
+        self.data={"city":self.city.pk,"title":"Repair","service":self.service.pk,"source":"OLX","client_name":"Ivan","client_phone":"+77001234567","client_address":"Street 1"}
 
     def test_create_client_and_lead(self):
         form=LeadForm(self.data)

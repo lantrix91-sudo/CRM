@@ -1,8 +1,9 @@
+from apps.orders.test_helpers import create_order_with_rate
 from decimal import Decimal
 from django.test import TestCase
 from django.utils import timezone
 from datetime import timedelta
-from apps.accounts.models import User
+from apps.accounts.models import User, WorkerServiceRate
 from apps.accounts.forms import EmployeeForm
 from apps.customers.models import Client
 from apps.services.models import Service
@@ -11,22 +12,22 @@ from apps.orders.models import Order
 
 class ProfileTests(TestCase):
     def setUp(self):
-        self.worker = User.objects.create_user(username="profile_worker", role="worker", percentage=50)
+        self.worker = User.objects.create_user(username="profile_worker", role="worker")
 
     def test_scoped_earnings_and_read_only_curator(self):
-        curator = User.objects.create_user(username="curator", role="curator", percentage=10)
-        operator = User.objects.create_user(username="operator", role="operator", percentage=5)
-        manager = User.objects.create_user(username="manager", role="manager", percentage=2)
-        worker = User.objects.create_user(username="worker", role="worker", percentage=50,
+        curator = User.objects.create_user(username="curator", role="curator")
+        operator = User.objects.create_user(username="operator", role="operator")
+        manager = User.objects.create_user(username="manager", role="manager")
+        worker = User.objects.create_user(username="worker", role="worker",
                                           curator=curator)
         other = User.objects.create_user(username="other", role="worker")
         client = Client.objects.create(name="Client", phone="123")
         service = Service.objects.create(name="Repair")
-        original = Order.objects.create(title="Paid", client=client, service=service, employee=worker, status="paid", amount=20000, worker_percentage=50)
+        original = create_order_with_rate(title="Paid", client=client, service=service, employee=worker, status="paid", amount=20000, worker_percentage=50)
         unrelated = Order.objects.create(title="Other", client=client, service=service, employee=other, status="paid", amount=90000)
         Order.objects.create(title="Unpaid", client=client, service=service, employee=worker, status="completed", amount=5000)
         Order.objects.create(title="Repeat", client=client, service=service, employee=worker, status="paid", repeat_of=original, amount=20000)
-        for user, expected in ((curator, 2000), (worker, 10000)):
+        for user, expected in ((curator, 0), (worker, 10000)):
             self.client.force_login(user)
             response = self.client.get("/profile/")
             self.assertEqual(response.status_code, 200)
@@ -39,30 +40,33 @@ class ProfileTests(TestCase):
         self.assertEqual(self.client.post(f"/orders/{original.pk}/", {"action": "save"}).status_code, 403)
         self.assertEqual(self.client.get("/employees/").status_code, 403)
 
-    def test_paid_order_shows_stored_percentage_and_financial_breakdown(self):
+    def test_paid_order_uses_its_service_rate_and_financial_breakdown(self):
         client = Client.objects.create(name="Stored percentage client", phone="789")
         service = Service.objects.create(name="Stored percentage service")
-        Order.objects.create(
+        create_order_with_rate(
             title="Stored percentage order", client=client, service=service,
             employee=self.worker, status="paid", amount=20000,
             worker_percentage=50,
         )
-        self.worker.percentage = 80
-        self.worker.save(update_fields=("percentage",))
+        WorkerServiceRate.objects.create(worker=self.worker,
+            service=Service.objects.create(name="Other rate"), worker_percentage=80)
         self.client.force_login(self.worker)
         response = self.client.get("/profile/")
 
-        self.assertContains(response, "Стоимость услуг: 20000,00")
-        self.assertContains(response, "Расходы: 0 KZT")
-        self.assertContains(response, "После расходов: 20000,00")
-        self.assertContains(response, "Процент мастера: 50,00 %")
-        self.assertContains(response, "Доля мастера: 10000,00")
-        self.assertContains(response, "Доля компании: 10000,00")
+        breakdown = response.context["orders"][0].financial_breakdown
+        self.assertEqual(breakdown["service_amount"], Decimal("20000"))
+        self.assertEqual(breakdown["expenses"], Decimal("0"))
+        self.assertEqual(breakdown["net_amount"], Decimal("20000"))
+        self.assertEqual(breakdown["worker_percentage"], Decimal("50"))
+        self.assertEqual(breakdown["worker_amount"], Decimal("10000"))
+        self.assertEqual(breakdown["company_amount"], Decimal("10000"))
+        self.assertEqual(response.context["earnings"], Decimal("10000"))
+        self.assertContains(response, "Расчётная доля")
 
     def test_completed_repeat_is_not_in_dashboard_revenue(self):
         client = Client.objects.create(name="Repeat dashboard client", phone="555")
         service = Service.objects.create(name="Repeat dashboard service")
-        original = Order.objects.create(
+        original = create_order_with_rate(
             title="Original", client=client, service=service,
             employee=self.worker, status="paid", amount=10000,
             worker_percentage=50, paid_at=timezone.now(),
@@ -79,7 +83,7 @@ class ProfileTests(TestCase):
     def test_paid_breakdown_deducts_expenses_before_shares(self):
         client = Client.objects.create(name="Expenses client", phone="456")
         service = Service.objects.create(name="Expenses service")
-        order = Order.objects.create(
+        order = create_order_with_rate(
             title="Paid with expenses", client=client, service=service,
             employee=self.worker, status="paid", amount=20000, expenses=3000,
             worker_percentage=50,
@@ -87,16 +91,19 @@ class ProfileTests(TestCase):
         self.client.force_login(self.worker)
         response = self.client.get("/profile/")
 
-        self.assertContains(response, "Стоимость услуг: 20000,00")
-        self.assertContains(response, "Расходы: 3000,00")
-        self.assertContains(response, "После расходов: 17000,00")
-        self.assertContains(response, "Доля мастера: 8500,00")
-        self.assertContains(response, "Доля компании: 8500,00")
+        breakdown = response.context["orders"][0].financial_breakdown
+        self.assertEqual(breakdown["service_amount"], Decimal("20000"))
+        self.assertEqual(breakdown["expenses"], Decimal("3000"))
+        self.assertEqual(breakdown["net_amount"], Decimal("17000"))
+        self.assertEqual(breakdown["worker_amount"], Decimal("8500"))
+        self.assertEqual(breakdown["company_amount"], Decimal("8500"))
+        self.assertEqual(response.context["earnings"], Decimal("8500"))
+        self.assertContains(response, "Расчётная доля")
 
     def test_worker_dashboard_has_today_month_and_current_shift_totals(self):
         client = Client.objects.create(name="Dashboard client", phone="321")
         service = Service.objects.create(name="Dashboard service")
-        Order.objects.create(
+        create_order_with_rate(
             title="Dashboard order", client=client, service=service,
             employee=self.worker, status="paid", amount=20000, expenses=3000,
             worker_percentage=50, paid_at=timezone.now(),
@@ -118,17 +125,17 @@ class ProfileTests(TestCase):
         service = Service.objects.create(name="Today service")
         today = timezone.now()
         yesterday = today - timedelta(days=1)
-        Order.objects.create(
+        create_order_with_rate(
             title="Today paid", client=client, service=service, employee=self.worker,
             status="paid", amount=10000, expenses=2000, worker_percentage=40,
             paid_at=today,
         )
-        Order.objects.create(
+        create_order_with_rate(
             title="Yesterday paid", client=client, service=service, employee=self.worker,
             status="paid", amount=50000, expenses=5000, worker_percentage=40,
             paid_at=yesterday,
         )
-        Order.objects.create(
+        create_order_with_rate(
             title="Unpaid", client=client, service=service, employee=self.worker,
             status="completed", amount=30000, expenses=3000, worker_percentage=40,
         )
@@ -143,7 +150,7 @@ class ProfileTests(TestCase):
 
     def test_manager_today_summary_aggregates_workers_and_can_select_worker(self):
         manager = User.objects.create_user(username="today_manager", role="manager")
-        other = User.objects.create_user(username="other_today_worker", role="worker", percentage=50)
+        other = User.objects.create_user(username="other_today_worker", role="worker")
         client = Client.objects.create(name="Manager today client", phone="987")
         service = Service.objects.create(name="Manager today service")
         now = timezone.now()
@@ -151,7 +158,7 @@ class ProfileTests(TestCase):
             (self.worker, Decimal("10000"), Decimal("2000"), Decimal("40")),
             (other, Decimal("6000"), Decimal("1000"), Decimal("50")),
         ):
-            Order.objects.create(
+            create_order_with_rate(
                 title="Manager today order", client=client, service=service,
                 employee=worker, status="paid", amount=amount, expenses=expenses,
                 worker_percentage=percentage, paid_at=now,
@@ -172,14 +179,14 @@ class ProfileTests(TestCase):
 
     def test_manager_can_filter_profile_orders_without_changing_worker_scope(self):
         manager = User.objects.create_user(username="orders_manager", role="manager")
-        other = User.objects.create_user(username="filtered_worker", role="worker", percentage=50)
+        other = User.objects.create_user(username="filtered_worker", role="worker")
         client = Client.objects.create(name="Filter client", phone="111")
         service = Service.objects.create(name="Filter service")
-        own_order = Order.objects.create(
+        own_order = create_order_with_rate(
             title="Worker order", client=client, service=service,
             employee=self.worker, status="paid", amount=1000, worker_percentage=50,
         )
-        other_order = Order.objects.create(
+        other_order = create_order_with_rate(
             title="Other worker order", client=client, service=service,
             employee=other, status="paid", amount=2000, worker_percentage=50,
         )
@@ -204,11 +211,15 @@ class ProfileTests(TestCase):
         self.assertNotContains(response, other_order.title)
         self.assertIsNone(response.context["workers"])
 
-    def test_percentage_validation(self):
+    def test_service_rate_percentage_validation(self):
+        from django.core.exceptions import ValidationError
+        service = Service.objects.create(name="Rate validation")
+        self.assertNotIn("percentage", EmployeeForm().fields)
         for value in ("-1", "100.01"):
-            form = EmployeeForm({"username": "x", "role": "worker", "percentage": value})
-            self.assertFalse(form.is_valid())
-            self.assertIn("percentage", form.errors)
+            rate = WorkerServiceRate(worker=self.worker, service=service, worker_percentage=value)
+            with self.assertRaises(ValidationError) as error:
+                rate.full_clean()
+            self.assertIn("worker_percentage", error.exception.message_dict)
 
     def test_employee_form_has_four_roles_and_only_curator_assignment(self):
         form = EmployeeForm()
