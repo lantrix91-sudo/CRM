@@ -136,8 +136,8 @@ class BoardAPI(APIView):
     def _city_counts(request):
         from apps.customers.models import City
         from django.db.models import Count, Q
-        lead_q = Q(leads__order__isnull=True)
-        order_q = Q(orders__isnull=False)
+        lead_q = Q(leads__order__isnull=True, leads__status__in=("new", "assigned", "in_progress"))
+        order_q = Q(orders__status__in=("new", "assigned", "in_progress"))
         rows = City.objects.filter(is_active=True).annotate(
             lead_count=Count("leads", filter=lead_q, distinct=True),
             order_count=Count("orders", filter=order_q, distinct=True),

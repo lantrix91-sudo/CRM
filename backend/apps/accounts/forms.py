@@ -85,6 +85,15 @@ class EmployeeForm(forms.ModelForm):
         model = User
         fields = ("username", "first_name", "last_name", "role", "curator", "is_active", "services", "service_cities", "is_available", "max_active_leads", "telegram_chat_id")
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["services"].widget = forms.CheckboxSelectMultiple()
+        self.fields["services"].queryset = self.fields["services"].queryset.order_by("name")
+        self.fields["service_cities"].widget = forms.CheckboxSelectMultiple()
+        self.fields["service_cities"].queryset = City.objects.filter(is_active=True)
+        for field in ("services", "service_cities"):
+            self.fields[field].help_text = "Отметьте один или несколько вариантов."
+
     def clean(self):
         data = super().clean()
         for field in ("curator",):
@@ -156,3 +165,16 @@ class OrderCompletionForm(forms.Form):
         if data.get("amount") is not None and data.get("expenses") is not None and data["expenses"] > data["amount"]:
             self.add_error("expenses", "Расходы не могут превышать полученную сумму.")
         return data
+
+
+class CityForm(forms.ModelForm):
+    class Meta:
+        model = City
+        fields = ("name",)
+        labels = {"name": "Название города"}
+
+    def clean_name(self):
+        name = self.cleaned_data["name"].strip()
+        if City.objects.filter(name__iexact=name).exists():
+            raise forms.ValidationError("Такой город уже существует, в том числе среди неактивных.")
+        return name

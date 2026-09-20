@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,7 +12,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -21,7 +20,6 @@ import * as SecureStore from 'expo-secure-store';
 
 import {
   api,
-  ApiError,
   serverURL,
   type Order,
   type Page,
@@ -30,6 +28,13 @@ import {
   type Session,
   type Summary,
 } from './src/api';
+
+import { Button } from './src/components/Button';
+import { Field } from './src/components/Field';
+import { ui } from './src/theme';
+import { useTask } from './src/hooks/useTask';
+
+import StaffWorkspace from './src/StaffWorkspace';
 
 const KEY = 'crm-worker-session';
 
@@ -49,77 +54,6 @@ function money(value: string | null | undefined) {
     number.toLocaleString('ru-RU', {
       maximumFractionDigits: 2,
     }) + ' ₸'
-  );
-}
-
-function Button({
-  title,
-  onPress,
-  disabled = false,
-  secondary = false,
-}: {
-  title: string;
-  onPress: () => void;
-  disabled?: boolean;
-  secondary?: boolean;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      disabled={disabled}
-      onPress={onPress}
-      style={[
-        styles.button,
-        secondary && styles.secondary,
-        disabled && styles.disabled,
-      ]}
-    >
-      <Text
-        style={[
-          styles.buttonText,
-          secondary && styles.secondaryButtonText,
-        ]}
-      >
-        {title}
-      </Text>
-    </Pressable>
-  );
-}
-
-function Field({
-  label,
-  value,
-  set,
-  secure = false,
-  numeric = false,
-  multiline = false,
-}: {
-  label: string;
-  value: string;
-  set: (value: string) => void;
-  secure?: boolean;
-  numeric?: boolean;
-  multiline?: boolean;
-}) {
-  return (
-    <View>
-      <Text style={styles.label}>{label}</Text>
-
-      <TextInput
-        accessibilityLabel={label}
-        style={[
-          styles.input,
-          multiline && styles.multilineInput,
-        ]}
-        value={value}
-        onChangeText={set}
-        secureTextEntry={secure}
-        keyboardType={numeric ? 'decimal-pad' : 'default'}
-        autoCapitalize="none"
-        autoCorrect={false}
-        multiline={multiline}
-      />
-    </View>
   );
 }
 
@@ -210,10 +144,7 @@ export default function App() {
   const [preview, setPreview] =
     useState<Preview | null>(null);
 
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-
-  const running = useRef(false);
+  const { busy, error, setError, run: perform } = useTask(removeStoredSession);
 
   function clearLocalSession() {
     setSession(null);
@@ -228,33 +159,6 @@ export default function App() {
   async function removeStoredSession() {
     await SecureStore.deleteItemAsync(KEY);
     clearLocalSession();
-  }
-
-  async function perform(task: () => Promise<void>) {
-    if (running.current) return;
-
-    running.current = true;
-    setBusy(true);
-    setError('');
-
-    try {
-      await task();
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        await removeStoredSession();
-        setError('Сессия завершена. Войдите снова.');
-        return;
-      }
-
-      setError(
-        e instanceof Error
-          ? e.message
-          : 'Не удалось выполнить действие',
-      );
-    } finally {
-      running.current = false;
-      setBusy(false);
-    }
   }
 
   useEffect(() => {
@@ -278,8 +182,11 @@ export default function App() {
           server: origin,
         };
 
+        const identity = await api<{ name: string; role: Session['role'] }>(origin, 'me/', restored.token);
+        const current = { ...restored, ...identity };
+        await SecureStore.setItemAsync(KEY, JSON.stringify(current));
         setServer(origin);
-        setSession(restored);
+        setSession(current);
       } catch {
         await SecureStore.deleteItemAsync(KEY).catch(
           () => undefined,
@@ -297,7 +204,7 @@ export default function App() {
   }, []);
 
   async function refresh(nextPage = 1) {
-    if (!session) return;
+    if (!session || session.role === 'manager' || session.role === 'operator') return;
 
     if (selected) {
       const value = await api<Order>(
@@ -396,6 +303,7 @@ export default function App() {
     const result = await api<{
       token: string;
       name: string;
+      role: Session['role'];
     }>(
       origin,
       'login/',
@@ -553,6 +461,10 @@ export default function App() {
   const selectedActions = selected?.actions ?? [];
   const selectedEvents = selected?.events ?? [];
 
+  if (ready && session && (session.role === 'manager' || session.role === 'operator')) {
+    return <SafeAreaProvider><StatusBar style="dark" /><StaffWorkspace session={session} onLogout={logout} /></SafeAreaProvider>;
+  }
+
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.safe}>
@@ -568,7 +480,7 @@ export default function App() {
         >
           <View style={styles.header}>
             <Text style={styles.logo}>
-              CRM · Мастер
+              {session ? 'CRM · Мастер' : 'CRM'}
             </Text>
 
             <Text style={styles.muted}>
@@ -609,7 +521,7 @@ export default function App() {
               {!session ? (
                 <View style={styles.card}>
                   <Text style={styles.heading}>
-                    Вход для мастера
+                    Вход в CRM
                   </Text>
 
                   <Text style={styles.muted}>
@@ -617,7 +529,7 @@ export default function App() {
                     CRM.
                   </Text>
 
-                  <Field
+                  <Field autoCapitalize="none" autoCorrect={false}
                     label={
                       __DEV__
                         ? 'Адрес сервера (HTTPS или локальный HTTP)'
@@ -627,13 +539,13 @@ export default function App() {
                     set={setServer}
                   />
 
-                  <Field
+                  <Field autoCapitalize="none" autoCorrect={false}
                     label="Логин"
                     value={username}
                     set={setUsername}
                   />
 
-                  <Field
+                  <Field autoCapitalize="none" autoCorrect={false}
                     label="Пароль"
                     value={password}
                     set={setPassword}
@@ -854,14 +766,14 @@ export default function App() {
                         <>
                           {!selected.repeat_of && (
                             <>
-                              <Field
+                              <Field autoCapitalize="none" autoCorrect={false}
                                 label="Получено, KZT (0 — бесплатно)"
                                 value={amount}
                                 set={setAmount}
                                 numeric
                               />
 
-                              <Field
+                              <Field autoCapitalize="none" autoCorrect={false}
                                 label="Расходы, KZT"
                                 value={expenses}
                                 set={setExpenses}
@@ -870,7 +782,7 @@ export default function App() {
                             </>
                           )}
 
-                          <Field
+                          <Field autoCapitalize="none" autoCorrect={false}
                             label="Что сделано"
                             value={comment}
                             set={setComment}
@@ -897,7 +809,7 @@ export default function App() {
                         Получение оплаты
                       </Text>
 
-                      <Field
+                      <Field autoCapitalize="none" autoCorrect={false}
                         label="Полученная сумма, KZT"
                         value={amount}
                         set={setAmount}
@@ -1183,10 +1095,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  safe: {
-    flex: 1,
-    backgroundColor: '#f3f7f5',
-  },
+  safe: ui.safe,
 
   center: {
     flex: 1,
@@ -1213,21 +1122,9 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
 
-  card: {
-    backgroundColor: '#fff',
-    padding: 20,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#e0e9e4',
-    gap: 8,
-  },
+  card: ui.card,
 
-  heading: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#183c31',
-    marginBottom: 6,
-  },
+  heading: ui.heading,
 
   title: {
     fontSize: 28,
@@ -1235,58 +1132,15 @@ const styles = StyleSheet.create({
     color: '#183c31',
   },
 
-  muted: {
-    color: '#697e75',
-    fontSize: 13,
-  },
+  muted: ui.muted,
 
-  label: {
-    color: '#365649',
-    marginBottom: 7,
-    marginTop: 10,
-  },
 
-  input: {
-    padding: 14,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#c7d7ce',
-    fontSize: 16,
-    backgroundColor: '#fafcfb',
-    color: '#183c31',
-  },
 
-  multilineInput: {
-    minHeight: 88,
-    textAlignVertical: 'top',
-  },
 
-  button: {
-    backgroundColor: '#176451',
-    padding: 15,
-    borderRadius: 11,
-    alignItems: 'center',
-    marginTop: 7,
-    minHeight: 48,
-  },
 
-  disabled: {
-    opacity: 0.45,
-  },
 
-  secondary: {
-    backgroundColor: '#e6f2eb',
-  },
 
-  buttonText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 15,
-  },
 
-  secondaryButtonText: {
-    color: '#176451',
-  },
 
   badge: {
     color: '#176451',
@@ -1345,13 +1199,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  error: {
-    backgroundColor: '#ffebea',
-    padding: 15,
-    borderRadius: 12,
-  },
+  error: ui.error,
 
-  errorText: {
-    color: '#9d2424',
-  },
+  errorText: ui.errorText,
 });

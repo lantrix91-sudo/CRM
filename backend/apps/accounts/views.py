@@ -289,6 +289,13 @@ def edit_record(request, kind, pk=None):
 def employees(request, pk=None):
     obj = get_object_or_404(User, pk=pk, is_superuser=False) if pk else None
     telegram_link = None
+    from .forms import CityForm
+    adding_city = request.method == "POST" and request.POST.get("action") == "add_city"
+    city_form = CityForm(request.POST if adding_city else None)
+    if adding_city and city_form.is_valid():
+        city = city_form.save()
+        messages.success(request, f"Город «{city.name}» добавлен.")
+        return redirect("employee-edit", pk=pk) if pk else redirect("employees")
     if request.method == "POST" and request.POST.get("action") == "telegram_link":
         if obj is None or obj.role != "worker" or not obj.is_active:
             raise PermissionDenied
@@ -311,8 +318,8 @@ def employees(request, pk=None):
             messages.error(request, str(error))
         form = EmployeeForm(instance=obj)
     else:
-        form = EmployeeForm(request.POST or None, instance=obj)
-    if request.method == "POST" and form.is_valid():
+        form = EmployeeForm(None if adding_city else request.POST or None, instance=obj)
+    if request.method == "POST" and not adding_city and form.is_valid():
         # Avoid locking the current manager out through their own role editor.
         if obj and obj.pk == request.user.pk and (form.cleaned_data["role"] != "manager" or not form.cleaned_data["is_active"]):
             form.add_error("role", "Нельзя отключить или изменить собственную роль.")
@@ -349,7 +356,7 @@ def employees(request, pk=None):
         rates = {rate.service_id: rate for rate in WorkerServiceRate.objects.filter(worker=obj)}
         rate_rows = [{"service": service, "rate": rates.get(service.pk)} for service in Service.objects.all()]
     return render(request, "accounts/employees.html", {
-        "form": form, "employee_record": obj, "telegram_link": telegram_link,
+        "city_form": city_form, "form": form, "employee_record": obj, "telegram_link": telegram_link,
         "employees": User.objects.filter(is_superuser=False).order_by("username"),
         "rate_rows": rate_rows,
         "cities": City.objects.filter(is_active=True),

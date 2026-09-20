@@ -1,4 +1,4 @@
-"""Worker-only API for the native mobile client."""
+"""Mobile authentication and worker order workflow."""
 import hashlib
 import secrets
 from datetime import timedelta
@@ -20,6 +20,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
+from .access import role_of
 from .models import MobileSession
 from .forms import OrderCompletionForm, ReceivedPaymentForm
 from apps.orders.models import Order
@@ -76,13 +77,13 @@ class Login(APIView):
         data = LoginInput(data=request.data)
         data.is_valid(raise_exception=True)
         user = authenticate(request=request, **data.validated_data)
-        if not user or user.role != "worker" or user.is_superuser:
-            raise AuthenticationFailed("Неверный логин или пароль либо нет доступа мастера.")
+        if not user or role_of(user) not in ("manager", "operator", "worker"):
+            raise AuthenticationFailed("Неверный логин или пароль либо нет доступа к приложению.")
         token = secrets.token_urlsafe(32)
         MobileSession.objects.filter(user=user, expires_at__lte=timezone.now()).delete()
         MobileSession.objects.create(user=user, token_hash=digest(token),
             password_hash=digest(user.password), expires_at=timezone.now() + timedelta(days=7))
-        return Response({"token": token, "name": user.get_full_name() or user.username})
+        return Response({"token": token, "name": user.get_full_name() or user.username, "role": role_of(user)})
 
 
 class Logout(WorkerAPI):
@@ -218,3 +219,15 @@ class Profile(WorkerAPI):
     def get(self, request):
         return Response({"name": request.user.get_full_name() or request.user.username,
                          "dashboard": worker_dashboard(request.user)})
+
+
+class Identity(APIView):
+    authentication_classes = [MobileAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        role = role_of(request.user)
+        if role not in ("manager", "operator", "worker"):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Нет доступа к приложению.")
+        return Response({"name": request.user.get_full_name() or request.user.username, "role": role})

@@ -60,7 +60,7 @@ class MobileAPITests(TestCase):
         self.worker.save()
         self.assertEqual(self.client.get("/api/mobile/orders/").status_code, 403)
         self.client.credentials()
-        self.assertNotEqual(self.client.post("/api/mobile/login/", {"username": "mobile", "password": "Test-mobile-pass-123"}).status_code, 200)
+        self.assertEqual(self.client.post("/api/mobile/login/", {"username": "mobile", "password": "Test-mobile-pass-123"}).data["role"], "operator")
 
     def test_contacts_hidden_until_accepted(self):
         url = f"/api/mobile/orders/{self.order.pk}/"

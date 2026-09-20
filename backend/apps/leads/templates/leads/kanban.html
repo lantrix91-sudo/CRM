@@ -2,10 +2,10 @@
 {% load static %}
 {% block extra_head %}
 <meta name="csrf-token" content="{{ csrf_token }}">
-<link rel="stylesheet" href="{% static 'kanban/kanban.css' %}?v=7">
+<link rel="stylesheet" href="{% static 'kanban/kanban.css' %}?v=10">
 {% endblock %}
 {% block content %}
 <div id="root"><p>Загрузка доски…</p></div>
 <noscript>Для канбан-доски включите JavaScript. <a href="{% url 'leads:list' %}">Открыть список лидов</a></noscript>
-<script type="module" src="{% static 'kanban/kanban.js' %}?v=7"></script>
+<script type="module" src="{% static 'kanban/kanban.js' %}?v=10"></script>
 {% endblock %}

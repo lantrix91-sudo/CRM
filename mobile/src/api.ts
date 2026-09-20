@@ -1,4 +1,5 @@
 export type Session = {
+  role?: 'manager' | 'operator' | 'worker';
   server: string;
   token: string;
   name: string;
